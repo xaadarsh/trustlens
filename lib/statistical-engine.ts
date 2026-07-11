@@ -4,67 +4,57 @@ export const DISCLAIMER =
   'TrustLens shows pattern-based confidence signals from visible review data. It does not prove whether any review, reviewer, seller, or product is fake.';
 
 const POPULATION_DISCLAIMER =
-  'TrustLens shows pattern-based confidence signals. This grade is sourced from the product\'s public rating history (total reviews and average rating), not a per-review scan, because too few individual reviews could be read.';
+  'TrustLens shows pattern-based confidence signals. This grade is sourced from the product\'s public rating history (star-by-star breakdown, total reviews, and average rating), not a per-review scan, because too few individual reviews could be read.';
 
 // A tiny visible sample (Amazon's default in-page order skews toward
 // "helpful"-voted reviews, which are disproportionately critical) is enough
-// to show partial signals but not enough to assert a letter grade — a wrong
-// grade is worse than "Insufficient data". 30 is the floor of what a rule
-// like rating-concentration needs before its output means anything.
+// to show partial supporting signals but not enough on its own to carry a
+// grade. This no longer gates whether a grade is possible at all — see
+// hasPopulationCore below — only whether the sample-derived supporting
+// checks (verified-ratio, review-velocity, age-ratio, repeated-language)
+// get included alongside the population-level core.
 export const MIN_SAMPLE_SIZE = 30;
 
-// Below MIN_SAMPLE_SIZE, a grade can still be issued from Amazon's own
-// aggregate rating/count alone — but only at thresholds extreme and
-// unambiguous enough that no plausible per-review sample would overturn
-// them (a 128k-review, 4.8-star product isn't going to turn out to be a
-// scam). This is deliberately narrow: it must not fire for the broad middle
-// ground where a real sample is actually needed to say anything meaningful.
-const POPULATION_BYPASS_MIN_REVIEWS = 5000;
-const POPULATION_BYPASS_MIN_RATING = 4.5;
-const POPULATION_BYPASS_MAX_RATING = 2.0;
+const MIN_HISTOGRAM_LEVELS = 3;
+// Percentages should sum close to 100 (rounding); wider drift means the
+// scrape landed on the wrong element and shouldn't be trusted.
+const HISTOGRAM_SUM_TOLERANCE = 8;
 
 export function analyzeReviews(page: ScrapedAmazonPage): StatisticalAnalysis {
-  if (page.reviews.length < MIN_SAMPLE_SIZE) {
-    if (isPopulationBypassEligible(page)) {
-      const check = checkPopulationEvidenceOnly(page);
-      return {
-        grade: gradeFromScore(check.score),
-        score: check.score,
-        sampleSize: page.reviews.length,
-        checks: [check],
-        disclaimer: POPULATION_DISCLAIMER,
-      };
-    }
+  const hasSample = page.reviews.length >= MIN_SAMPLE_SIZE;
+  const hasCore = hasPopulationCore(page);
 
-    const shortfallLabel = page.totalReviews > 0
-      ? `Only ${page.reviews.length} of ${page.totalReviews.toLocaleString()} loaded — need ${MIN_SAMPLE_SIZE} for a grade.`
-      : `Only ${page.reviews.length} visible reviews found — need ${MIN_SAMPLE_SIZE} for a grade.`;
+  if (!hasSample && !hasCore) {
+    const label = page.totalReviews > 0
+      ? `Only ${page.reviews.length} of ${page.totalReviews.toLocaleString()} reviews could be read, and no star-by-star rating breakdown was found on this page.`
+      : 'TrustLens could not find a rating breakdown, an overall rating, or enough visible reviews on this page to compute a grade.';
 
     return {
       grade: 'Insufficient data',
       score: null,
       sampleSize: page.reviews.length,
-      checks: [
-        {
-          id: 'sample-size',
-          label: shortfallLabel,
-          status: 'unknown',
-          score: 0,
-          detail: shortfallLabel,
-        },
-      ],
+      checks: [{ id: 'sample-size', label, status: 'unknown', score: 0, detail: label }],
       disclaimer: DISCLAIMER,
     };
   }
 
-  const checks = [
-    checkVerifiedRatio(page.reviews),
-    checkRatingConcentration(page),
-    checkReviewVelocity(page.reviews),
-    checkAgeRatio(page),
-    checkRepeatedLanguage(page.reviews),
-    checkOverallRatingEvidence(page),
-  ];
+  // Population-level evidence — the star-by-star histogram and Amazon's own
+  // aggregate rating/count — reflects the ENTIRE review base, not the small
+  // sample TrustLens can scrape, so it forms the core of every grade
+  // whenever it's available. Sample-derived checks only join in as
+  // supporting signals, and only once there's enough sample to say anything
+  // meaningful with it.
+  const checks = hasSample
+    ? [
+        checkHistogramShape(page),
+        checkOverallRatingEvidence(page),
+        checkVerifiedRatio(page.reviews),
+        checkReviewVelocity(page.reviews),
+        checkAgeRatio(page),
+        checkRepeatedLanguage(page.reviews),
+      ]
+    : [checkHistogramShape(page), checkOverallRatingEvidence(page)];
+
   const score = Math.round(
     checks.reduce((sum, check) => sum + check.score * checkWeight(check.id), 0) /
       checks.reduce((sum, check) => sum + checkWeight(check.id), 0),
@@ -75,8 +65,68 @@ export function analyzeReviews(page: ScrapedAmazonPage): StatisticalAnalysis {
     score,
     sampleSize: page.reviews.length,
     checks,
-    disclaimer: DISCLAIMER,
+    disclaimer: hasSample ? DISCLAIMER : POPULATION_DISCLAIMER,
   };
+}
+
+// True whenever there's population-level evidence to grade from at all —
+// either a usable star-by-star histogram or Amazon's own aggregate
+// rating+count. This is deliberately broad (no minimum review-count floor
+// beyond what checkHistogramShape/checkOverallRatingEvidence themselves
+// require to trust their data): a 1,920-review product should get a real
+// grade from its histogram just as readily as a 190,000-review one — the
+// checks below already scale their confidence language to volume.
+function hasPopulationCore(page: ScrapedAmazonPage): boolean {
+  const hasHistogram = page.ratingHistogram.length >= MIN_HISTOGRAM_LEVELS;
+  const hasAggregate = page.averageRating !== null && !!page.totalReviewCount;
+  return hasHistogram || hasAggregate;
+}
+
+// The single richest signal available: Amazon computes this star-by-star
+// breakdown from the full review population, not a scraped sample, so it
+// can't be skewed by which handful of reviews happened to render on the
+// page. Organic products show a gradually declining curve (most 5★, fewer
+// at each step down); manipulated ones tend toward a "J-shape" — inflated
+// 5★ and 1★ with a hollow 2-4★ middle (paid/incentivized positives plus
+// real buyers who got burned), or near-total 5★ concentration with almost
+// no spread at all.
+function checkHistogramShape(page: ScrapedAmazonPage): RuleCheckResult {
+  const byStar = new Map(page.ratingHistogram.map((entry) => [entry.star, entry.percent]));
+  if (byStar.size < MIN_HISTOGRAM_LEVELS) {
+    return result('histogram-shape', 'Rating distribution shape', 'unknown', 60, 'TrustLens could not read a star-by-star rating breakdown on this page variant.');
+  }
+
+  const p5 = byStar.get(5) ?? 0;
+  const p4 = byStar.get(4) ?? 0;
+  const p3 = byStar.get(3) ?? 0;
+  const p2 = byStar.get(2) ?? 0;
+  const p1 = byStar.get(1) ?? 0;
+  const total = p5 + p4 + p3 + p2 + p1;
+
+  if (Math.abs(total - 100) > HISTOGRAM_SUM_TOLERANCE) {
+    return result('histogram-shape', 'Rating distribution shape', 'unknown', 60, 'The star-by-star rating breakdown on this page did not add up to a usable total.');
+  }
+
+  const middle = p4 + p3 + p2;
+  const shape = `${Math.round(p5)}% 5★, ${Math.round(p4)}% 4★, ${Math.round(p3)}% 3★, ${Math.round(p2)}% 2★, ${Math.round(p1)}% 1★`;
+
+  if (middle >= 20) {
+    return result('histogram-shape', 'Rating distribution shape', 'pass', 93, `${shape} — a natural, gradually declining curve across the full review population.`);
+  }
+
+  if (p5 >= 70 && p1 >= 10) {
+    return result('histogram-shape', 'Rating distribution shape', 'risk', 25, `${shape} — ratings cluster at the extremes (5★ and 1★) with a hollow 2-4★ middle, an uneven ("J-shaped") distribution worth a closer look.`);
+  }
+
+  if (p5 >= 85) {
+    return result('histogram-shape', 'Rating distribution shape', 'risk', 32, `${shape} — ratings are unusually concentrated at five stars with almost no spread across the rest of the scale.`);
+  }
+
+  if (middle >= 10) {
+    return result('histogram-shape', 'Rating distribution shape', 'watch', 62, `${shape} — the 2-4★ middle is thinner than typical, so TrustLens reduces confidence slightly.`);
+  }
+
+  return result('histogram-shape', 'Rating distribution shape', 'watch', 55, `${shape} — the rating distribution is thin across the middle of the scale.`);
 }
 
 function checkVerifiedRatio(reviews: ReviewSample[]): RuleCheckResult {
@@ -92,23 +142,6 @@ function checkVerifiedRatio(reviews: ReviewSample[]): RuleCheckResult {
   }
 
   return result('verified-ratio', 'Verified purchase mix', 'risk', 34, `Only ${percent(ratio)} of visible non-Vine reviews show a verified-purchase badge, so confidence is lower.`);
-}
-
-function checkRatingConcentration(page: ScrapedAmazonPage): RuleCheckResult {
-  const ratings = page.reviews.map((review) => review.rating).filter((rating): rating is number => rating !== null);
-  const fiveStarRatio = ratings.filter((rating) => rating >= 4.8).length / ratings.length;
-  const oneLineFiveStars = page.reviews.filter((review) => (review.rating ?? 0) >= 4.8 && review.body.length < 90).length / page.reviews.length;
-
-  if (fiveStarRatio > 0.86 && oneLineFiveStars > 0.35) {
-    return result('rating-concentration', 'Rating concentration', 'risk', 38, 'Visible ratings cluster heavily at five stars and many high-rating reviews are very short.');
-  }
-
-  if (fiveStarRatio > 0.72) {
-    return result('rating-concentration', 'Rating concentration', 'watch', 67, 'Visible ratings lean strongly positive, so TrustLens reduces confidence slightly.');
-  }
-
-  const average = page.averageRating ? `${page.averageRating.toFixed(1)} average rating` : 'the visible spread';
-  return result('rating-concentration', 'Rating concentration', 'pass', 88, `The visible review ratings are not unusually concentrated compared with ${average}.`);
 }
 
 function checkReviewVelocity(reviews: ReviewSample[]): RuleCheckResult {
@@ -179,9 +212,10 @@ function checkRepeatedLanguage(reviews: ReviewSample[]): RuleCheckResult {
 
 // Amazon's own aggregate rating and review count reflect the full review
 // population, not the small (and "helpful"-vote-biased) sample TrustLens can
-// scrape. A product with tens of thousands of reviews at a high average is
-// strong independent evidence that a 13-review snippet sample should not be
-// able to override, so this check carries extra weight in the final score.
+// scrape. Secondary to checkHistogramShape (which reads the same population
+// but at full star-by-star resolution), this still carries extra weight
+// over any single sample-derived check, and is often the only population
+// signal available when the histogram itself can't be read.
 function checkOverallRatingEvidence(page: ScrapedAmazonPage): RuleCheckResult {
   const { averageRating, totalReviewCount } = page;
   if (averageRating === null || !totalReviewCount) {
@@ -205,31 +239,13 @@ function checkOverallRatingEvidence(page: ScrapedAmazonPage): RuleCheckResult {
   return result('overall-rating', 'Overall rating & review volume', 'watch', 60, `${summary} is a limited independent signal.`);
 }
 
-function isPopulationBypassEligible(page: ScrapedAmazonPage): boolean {
-  const { averageRating, totalReviewCount } = page;
-  if (averageRating === null || !totalReviewCount) return false;
-  if (totalReviewCount < POPULATION_BYPASS_MIN_REVIEWS) return false;
-  return averageRating >= POPULATION_BYPASS_MIN_RATING || averageRating <= POPULATION_BYPASS_MAX_RATING;
-}
-
-// Only called once isPopulationBypassEligible has confirmed averageRating
-// and totalReviewCount are both present and extreme enough to stand alone —
-// label carries the full "sourced from population evidence" message since
-// the panel renders single-line check labels, not the detail field.
-function checkPopulationEvidenceOnly(page: ScrapedAmazonPage): RuleCheckResult {
-  const averageRating = page.averageRating as number;
-  const totalReviewCount = page.totalReviewCount as number;
-  const summary = `Grade based on ${totalReviewCount.toLocaleString()} reviews (${averageRating.toFixed(1)}★ average) — only ${page.reviews.length} could be read directly.`;
-
-  if (averageRating >= POPULATION_BYPASS_MIN_RATING) {
-    return result('population-evidence', summary, 'pass', 90, summary);
-  }
-  return result('population-evidence', summary, 'risk', 15, summary);
-}
-
 const CHECK_WEIGHTS: Partial<Record<string, number>> = {
   // Population-level evidence outweighs any single sample-derived check —
   // it can't be skewed by which 13-45 reviews Amazon happened to surface.
+  // The histogram carries the most weight since it's the full-resolution
+  // star-by-star breakdown; overall-rating is the coarser (but more often
+  // available) average+count fallback.
+  'histogram-shape': 3,
   'overall-rating': 2,
 };
 

@@ -4,7 +4,7 @@ import { TrustPanel } from '@/components/TrustPanel';
 import '@/components/trustlens.css';
 import { getSettings } from '@/lib/byo-key';
 import { MIN_SAMPLE_SIZE } from '@/lib/statistical-engine';
-import type { ReviewSample, ScrapedAmazonPage } from '@/lib/types';
+import type { RatingHistogramEntry, ReviewSample, ScrapedAmazonPage } from '@/lib/types';
 
 export default defineContentScript({
   matches: [
@@ -264,6 +264,10 @@ const selectors = {
   vineBadge: ['[data-hook="vine-badge"]', '.cr-vine-review-badge'],
   productDetails: ['#productDetails_detailBullets_sections1', '#productDetails_techSpec_section_1', '#productDetails_db_sections', '#productDetails_expanderSectionTables', '#productDetails_expanderTables_depthLeftSections', '#productDetails_expanderTables_depthRightSections', '#productDetailsHomeAndGarden_Updated', '#detailBullets_feature_div', '#prodDetails', '#productDetails_feature_div', '#productOverview_feature_div'],
   productDetailRows: ['tr', 'li', '.a-row', 'div', 'span'],
+  // #histogramTable is the confirmed-live container (verified against a real
+  // product page — it's a <ul>, not an actual <table>, despite the id). The
+  // rest are fallbacks for page variants that don't use that id.
+  ratingHistogramTable: ['#histogramTable', '[data-hook="histogram-table"]', '[data-hook="rating-histogram"]', '.cr-widget-Histogram', '#cr-summarization-histogram'],
   mountAnchor: ['#averageCustomerReviews', '#averageCustomerReviews_feature_div', '[data-hook="average-star-rating"]', '#reviewsMedley', '[data-hook="reviews-medley-widget"]'],
   // Distinct from mountAnchor: the actual reviews list container, further
   // down the page than the top rating summary. Amazon's lazy-load for
@@ -290,6 +294,64 @@ function queryAll(group: keyof typeof selectors, root: ParentNode): Element[] {
   return [];
 }
 
+// Amazon renders a full star-by-star breakdown (e.g. "54% gave 5 stars") on
+// nearly every product page, computed from the ENTIRE review population —
+// unlike the ~10-45 review cards TrustLens can scrape, which are a small,
+// "helpful"-vote-biased sample. This is the single richest signal available
+// and doesn't require scrolling into the reviews section or hitting the
+// sign-in gate that blocks the extra-page fetch in enhanceWithMoreReviews.
+const MIN_HISTOGRAM_LEVELS = 3;
+
+function scrapeRatingHistogram(root: ParentNode): RatingHistogramEntry[] {
+  const table = queryFirst('ratingHistogramTable', root);
+  if (!table) {
+    console.warn('[TrustLens] No rating histogram table found on this page variant — grading will fall back to overall rating/count only.');
+    return [];
+  }
+
+  // Primary: Amazon's numbered per-star analytics slot id (confirmed live —
+  // "dp_customerReviews_vertical_histogram_5" for the 5-star row, etc.).
+  // Doesn't depend on translated copy, unlike the text-based fallback below.
+  const bySlotId: RatingHistogramEntry[] = [];
+  for (let star = 5; star >= 1; star--) {
+    const el = table.querySelector(`[data-csa-c-slot-id$="_${star}"], [data-hook="histogram-row-${star}"]`);
+    const percent = el ? extractHistogramPercent(el) : null;
+    if (percent !== null) bySlotId.push({ star: star as 1 | 2 | 3 | 4 | 5, percent });
+  }
+  if (bySlotId.length >= MIN_HISTOGRAM_LEVELS) return bySlotId;
+
+  // Fallback: match each row by its own "N star(s)" aria-label or text —
+  // Amazon's row links carry aria-label="NN percent of reviews have N stars".
+  const byText: RatingHistogramEntry[] = [];
+  for (const row of table.querySelectorAll('li, tr, .a-histogram-row')) {
+    const ariaLabel = row.querySelector('[aria-label]')?.getAttribute('aria-label') ?? '';
+    const starMatch = ariaLabel.match(/([1-5])\s*stars?/i) ?? text(row).match(/([1-5])\s*stars?/i);
+    if (!starMatch) continue;
+    const star = Number(starMatch[1]) as 1 | 2 | 3 | 4 | 5;
+    const percent = extractHistogramPercent(row);
+    if (percent !== null && !byText.some((entry) => entry.star === star)) {
+      byText.push({ star, percent });
+    }
+  }
+
+  return byText.length > bySlotId.length ? byText : bySlotId;
+}
+
+// Reads the ARIA progressbar value first — a numeric attribute, unaffected
+// by locale translation of the surrounding "NN%" text — falling back to
+// parsing the row's own aria-label/visible text.
+function extractHistogramPercent(row: Element): number | null {
+  const meter = row.querySelector('[role="progressbar"]');
+  const ariaValue = meter?.getAttribute('aria-valuenow');
+  if (ariaValue) {
+    const fromAria = Number(ariaValue);
+    if (!Number.isNaN(fromAria)) return fromAria;
+  }
+  const ariaLabel = row.querySelector('[aria-label]')?.getAttribute('aria-label') ?? '';
+  const match = ariaLabel.match(/(\d{1,3})\s?(?:%|percent)/i) ?? text(row).match(/(\d{1,3})\s?%/);
+  return match ? Number(match[1]) : null;
+}
+
 function scrapeAmazonPage(root: Document): ScrapedAmazonPage & PageAnchors {
   const asinElement = queryFirst('asin', root) as HTMLInputElement | null;
   const reviewCards = queryAll('reviewCards', root).slice(0, 30);
@@ -304,6 +366,7 @@ function scrapeAmazonPage(root: Document): ScrapedAmazonPage & PageAnchors {
     totalReviewCount,
     productFirstAvailable: findDateFirstAvailable(queryAll('productDetails', root), selectors.productDetailRows, root),
     reviews: reviewCards.map((card, index) => scrapeReview(card, index, queryFirst)),
+    ratingHistogram: scrapeRatingHistogram(root),
     mountAnchor: queryFirst('mountAnchor', root),
     reviewsSectionAnchor: queryFirst('reviewsSection', root),
     reviewsScanned: reviewCards.length,

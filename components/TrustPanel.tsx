@@ -95,14 +95,13 @@ export function TrustPanel({ page }: TrustPanelProps) {
         </div>
         <div className="trustlens-summary-text">
           <p className="trustlens-title">Review confidence</p>
-          <p className="trustlens-subtitle">{page.reviewsScanned.toLocaleString()} of {page.totalReviews.toLocaleString()} scanned</p>
+          <p className="trustlens-subtitle">{subtitleText(page)}</p>
         </div>
       </div>
 
       <div className="trustlens-checks">
         {analysis.checks.map((check, index) => {
           const isShortfall = check.id === 'sample-size';
-          const needsWrap = isShortfall || check.id === 'population-evidence';
           return (
             <div
               className="trustlens-check"
@@ -112,7 +111,7 @@ export function TrustPanel({ page }: TrustPanelProps) {
             >
               <div className="trustlens-check-left">
                 <CheckStatusIcon status={check.status} />
-                <span className={needsWrap ? 'trustlens-check-label trustlens-check-label--wrap' : 'trustlens-check-label'}>
+                <span className={isShortfall ? 'trustlens-check-label trustlens-check-label--wrap' : 'trustlens-check-label'}>
                   {check.label}
                 </span>
               </div>
@@ -161,6 +160,19 @@ function ctaText(isPro: boolean, remainingTrials: number): string {
 
 function medallionGlyph(grade: TrustGrade): string {
   return grade === 'Insufficient data' ? '–' : grade;
+}
+
+// Population-first framing, matching how the grade is actually computed now
+// (see analyzeReviews): "Based on N reviews" reflects Amazon's full review
+// count, not just the handful of cards TrustLens managed to scrape.
+function subtitleText(page: ScrapedAmazonPage): string {
+  if (page.averageRating !== null && page.totalReviews > 0) {
+    return `Based on ${page.totalReviews.toLocaleString()} reviews (${page.averageRating.toFixed(1)}★)`;
+  }
+  if (page.reviewsScanned > 0) {
+    return `${page.reviewsScanned.toLocaleString()} reviews scanned`;
+  }
+  return 'Limited review data available';
 }
 
 function ShieldIcon({ className }: { className?: string }) {
