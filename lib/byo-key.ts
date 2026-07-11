@@ -48,17 +48,31 @@ export async function testApiKey(provider: DeepAnalysisProvider, apiKey: string)
           generationConfig: { maxOutputTokens: 8 },
         }),
       });
-      return response.ok ? { ok: true, message: 'Gemini key works.' } : { ok: false, message: `Gemini rejected the key (${response.status}).` };
+      return keyTestResultFromResponse('Gemini', response.status);
     }
 
     const response = await fetch('https://api.openai.com/v1/models', {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
-    return response.ok ? { ok: true, message: 'OpenAI key works.' } : { ok: false, message: `OpenAI rejected the key (${response.status}).` };
+    return keyTestResultFromResponse('OpenAI', response.status);
   } catch (error) {
     return {
       ok: false,
       message: error instanceof Error ? error.message : 'Unable to test the key.',
     };
   }
+}
+
+// A 429 means the key itself is fine but the provider is rate-limiting this
+// request right now (often from firing the test repeatedly in quick
+// succession) — worded distinctly from an actually-invalid key so the user
+// doesn't mistake transient rate-limiting for a bad key and re-paste it.
+function keyTestResultFromResponse(providerLabel: string, status: number): KeyTestResult {
+  if (status >= 200 && status < 300) {
+    return { ok: true, message: `${providerLabel} key works.` };
+  }
+  if (status === 429) {
+    return { ok: false, message: `${providerLabel} is rate-limiting this key right now — wait a moment and try again.` };
+  }
+  return { ok: false, message: `${providerLabel} rejected the key (${status}).` };
 }

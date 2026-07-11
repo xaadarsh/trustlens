@@ -39,7 +39,7 @@ const MAX_REVIEW_PAGES = 5;
 const FETCH_DELAY_MIN_MS = 400;
 const FETCH_DELAY_MAX_MS = 800;
 
-type PageAnchors = { mountAnchor: Element | null; reviewsSectionAnchor: Element | null };
+type PageAnchors = { mountAnchor: Element | null };
 
 async function mountWhenReady() {
   const existing = document.getElementById('trustlens-root');
@@ -58,17 +58,23 @@ async function mountWhenReady() {
   const reactRoot = createRoot(root);
   reactRoot.render(<TrustPanel page={initialPage} />);
 
-  // Some Amazon page variants fetch the review list via AJAX after initial
-  // render (or only once the reviews section scrolls into view), so a single
-  // scrape at document_idle can legitimately find fewer review cards than
-  // actually exist — including exactly zero, but also just "some, but not
-  // enough for a grade" (e.g. 4 of 14 on initial load). Trigger the watch
-  // whenever we're short of MIN_SAMPLE_SIZE, not only when reviews.length is
-  // literally 0 — otherwise a page that starts with a handful never gets a
-  // chance to grow toward a real grade even though more may lazy-load in.
+  // Some Amazon page variants fetch the review list via AJAX shortly after
+  // initial render, so a single scrape at document_idle can legitimately
+  // find fewer review cards than actually exist — including exactly zero,
+  // but also just "some, but not enough for a grade" (e.g. 4 of 14 on
+  // initial load). Trigger the watch whenever we're short of
+  // MIN_SAMPLE_SIZE, not only when reviews.length is literally 0 —
+  // otherwise a page that starts with a handful never gets a chance to grow
+  // toward a real grade even though more may lazy-load in.
+  //
+  // This purely WATCHES for that AJAX content to appear on its own (via
+  // MutationObserver) — it never scrolls or otherwise nudges the page.
+  // Never move the user's scroll position for this; enhanceWithMoreReviews
+  // below already gets more reviews via a direct network fetch to Amazon's
+  // /product-reviews/ endpoint, independent of viewport/scroll entirely.
   let currentPage: ScrapedAmazonPage & PageAnchors = initialPage;
   if (initialPage.reviews.length < MIN_SAMPLE_SIZE) {
-    const lazyLoadedPage = await watchForLazyReviews(reactRoot, initialPage.reviewsSectionAnchor ?? mountAnchor, initialPage);
+    const lazyLoadedPage = await watchForLazyReviews(reactRoot, initialPage);
     if (lazyLoadedPage) currentPage = lazyLoadedPage;
   }
 
@@ -79,7 +85,6 @@ async function mountWhenReady() {
 
 function watchForLazyReviews(
   reactRoot: ReturnType<typeof createRoot>,
-  nudgeTarget: Element,
   startingPage: ScrapedAmazonPage & PageAnchors,
 ): Promise<(ScrapedAmazonPage & PageAnchors) | null> {
   return new Promise((resolve) => {
@@ -91,7 +96,6 @@ function watchForLazyReviews(
       if (debounceTimer) clearTimeout(debounceTimer);
       clearTimeout(timeoutId);
       mutationObserver.disconnect();
-      intersectionObserver.disconnect();
     };
 
     const attemptRescrape = () => {
@@ -119,19 +123,6 @@ function watchForLazyReviews(
       debounceTimer = setTimeout(attemptRescrape, MUTATION_DEBOUNCE_MS);
     });
     mutationObserver.observe(document.body, { childList: true, subtree: true });
-
-    // Nudge: some layouts only fetch review data once the reviews section is
-    // actually visible in the viewport, not merely present in the DOM. If the
-    // anchor isn't visible yet, scroll it into view once to trigger that fetch.
-    const intersectionObserver = new IntersectionObserver((entries) => {
-      intersectionObserver.disconnect();
-      const entry = entries[0];
-      if (entry && !entry.isIntersecting) {
-        console.log('[TrustLens] Reviews section not yet in viewport — scrolling it into view to nudge lazy-loaded content.');
-        nudgeTarget.scrollIntoView({ behavior: 'auto', block: 'center' });
-      }
-    }, { threshold: 0 });
-    intersectionObserver.observe(nudgeTarget);
 
     const timeoutId = setTimeout(() => {
       if (settled) return;
@@ -269,11 +260,6 @@ const selectors = {
   // rest are fallbacks for page variants that don't use that id.
   ratingHistogramTable: ['#histogramTable', '[data-hook="histogram-table"]', '[data-hook="rating-histogram"]', '.cr-widget-Histogram', '#cr-summarization-histogram'],
   mountAnchor: ['#averageCustomerReviews', '#averageCustomerReviews_feature_div', '[data-hook="average-star-rating"]', '#reviewsMedley', '[data-hook="reviews-medley-widget"]'],
-  // Distinct from mountAnchor: the actual reviews list container, further
-  // down the page than the top rating summary. Amazon's lazy-load for
-  // review cards is tied to THIS section's own viewport visibility, not
-  // the summary widget near the top (which is usually already visible).
-  reviewsSection: ['#reviewsMedley', '[data-hook="reviews-medley-widget"]', '#cr-top-reviews-card', '[data-hook="cr-top-reviews-card"]'],
 };
 
 function queryFirst(group: keyof typeof selectors, root: ParentNode): Element | null {
@@ -368,7 +354,6 @@ function scrapeAmazonPage(root: Document): ScrapedAmazonPage & PageAnchors {
     reviews: reviewCards.map((card, index) => scrapeReview(card, index, queryFirst)),
     ratingHistogram: scrapeRatingHistogram(root),
     mountAnchor: queryFirst('mountAnchor', root),
-    reviewsSectionAnchor: queryFirst('reviewsSection', root),
     reviewsScanned: reviewCards.length,
     totalReviews: totalReviewCount ?? 0,
   };

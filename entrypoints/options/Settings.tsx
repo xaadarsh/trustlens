@@ -6,11 +6,11 @@
 // license management, appearance, and about info. Reachable via right-click
 // extension icon -> Options, or the popup's "Open Settings" button.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getSettings, maskApiKey, saveSettings, testApiKey } from '@/lib/byo-key';
 import { checkProStatus, getCachedLicenseStatus, saveLicenseKey } from '@/lib/license';
 import { FREE_TRIAL_LIMIT, getRemainingTrials } from '@/lib/usage-limits';
-import type { DeepAnalysisProvider, LicenseStatus, StoredSettings, ThemePreference } from '@/lib/types';
+import type { DeepAnalysisProvider, KeyTestResult, LicenseStatus, StoredSettings, ThemePreference } from '@/lib/types';
 
 const PRIVACY_POLICY_URL = 'https://xaadarsh.com/trustlens/privacy';
 const SUPPORT_EMAIL = 'aadarshraj380@gmail.com';
@@ -57,11 +57,12 @@ function Settings() {
     setSettings(await saveSettings({ theme }));
   }
 
-  async function saveKey(provider: DeepAnalysisProvider) {
+  // Return the outcome instead of pushing it into the page-bottom `status`
+  // string — KeyRow shows it inline next to the button that triggered it.
+  async function saveKey(provider: DeepAnalysisProvider): Promise<KeyTestResult> {
     const draft = provider === 'gemini' ? draftGeminiKey : draftOpenAIKey;
     if (draft.includes('*')) {
-      setStatus('Key is already saved.');
-      return;
+      return { ok: true, message: 'Key is already saved.' };
     }
 
     const next = provider === 'gemini'
@@ -70,15 +71,14 @@ function Settings() {
     setSettings(next);
     setDraftGeminiKey(maskApiKey(next.geminiKey));
     setDraftOpenAIKey(maskApiKey(next.openaiKey));
-    setStatus(`${provider === 'gemini' ? 'Gemini' : 'OpenAI'} key saved.`);
+    return { ok: true, message: `${provider === 'gemini' ? 'Gemini' : 'OpenAI'} key saved.` };
   }
 
-  async function testKey(provider: DeepAnalysisProvider) {
+  async function testKey(provider: DeepAnalysisProvider): Promise<KeyTestResult> {
     const key = provider === 'gemini'
       ? (draftGeminiKey.includes('*') ? settings.geminiKey : draftGeminiKey)
       : (draftOpenAIKey.includes('*') ? settings.openaiKey : draftOpenAIKey);
-    const result = await testApiKey(provider, key ?? '');
-    setStatus(result.message);
+    return testApiKey(provider, key ?? '');
   }
 
   async function verifyLicense() {
@@ -108,7 +108,7 @@ function Settings() {
           <div className="card">
             <div className="row">
               <span className="row-label">Deep-dive provider</span>
-              <div className="segmented">
+              <div className="segmented" data-active={settings.provider === 'gemini' ? 0 : 1}>
                 <button className={settings.provider === 'gemini' ? 'active' : ''} onClick={() => updateProvider('gemini')}>
                   Gemini
                 </button>
@@ -180,7 +180,7 @@ function Settings() {
           <div className="card">
             <div className="row">
               <span className="row-label">Theme</span>
-              <div className="segmented">
+              <div className="segmented" data-active={settings.theme === 'light' ? 0 : 1}>
                 <button className={settings.theme === 'light' ? 'active' : ''} onClick={() => updateTheme('light')}>Light</button>
                 <button className={settings.theme === 'dark' ? 'active' : ''} onClick={() => updateTheme('dark')}>Dark</button>
               </div>
@@ -219,26 +219,72 @@ function KeyRow(props: {
   label: string;
   value: string;
   onChange: (value: string) => void;
-  onSave: () => void;
-  onTest: () => void;
+  onSave: () => Promise<KeyTestResult>;
+  onTest: () => Promise<KeyTestResult>;
 }) {
+  // busyRef is the actual guard: a ref mutates synchronously and is shared
+  // across handler invocations regardless of React's render/batching
+  // timing, unlike a useState value, which is only updated after a
+  // re-render — two click() calls fired back-to-back in the same tick both
+  // still read the OLD state value if the guard were state-based, so both
+  // would slip past an `if (busy !== 'idle') return` check and fire two
+  // concurrent requests with the same key. That's exactly what was tripping
+  // Gemini's rate limit and producing inconsistent pass/fail results.
+  // `busy` state stays alongside it purely to drive the visible
+  // "Saving…"/"Testing…" label and disabled styling.
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState<'idle' | 'saving' | 'testing'>('idle');
+  const [feedback, setFeedback] = useState<KeyTestResult | null>(null);
+
+  async function run(phase: 'saving' | 'testing', action: () => Promise<KeyTestResult>) {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(phase);
+    setFeedback(null);
+    const result = await action();
+    busyRef.current = false;
+    setBusy('idle');
+    setFeedback(result);
+  }
+
   return (
-    <div className="row key-row">
-      <label className="key-row-label">
-        {props.label}
-        <input
-          autoComplete="off"
-          onFocus={() => {
-            if (props.value.includes('*')) props.onChange('');
-          }}
-          onChange={(event) => props.onChange(event.target.value)}
-          placeholder="Paste API key"
-          type={props.value.includes('*') ? 'text' : 'password'}
-          value={props.value}
-        />
-      </label>
-      <button className="btn-sm btn-primary-sm" onClick={props.onSave} title="Save key">Save</button>
-      <button className="btn-sm btn-outline-sm" onClick={props.onTest} title="Test connection">Test</button>
+    <div className="key-field-block">
+      <div className="row key-row">
+        <label className="key-row-label">
+          {props.label}
+          <input
+            autoComplete="off"
+            onFocus={() => {
+              if (props.value.includes('*')) props.onChange('');
+            }}
+            onChange={(event) => props.onChange(event.target.value)}
+            placeholder="Paste API key"
+            type={props.value.includes('*') ? 'text' : 'password'}
+            value={props.value}
+          />
+        </label>
+        <button
+          className="btn-sm btn-primary-sm"
+          disabled={busy !== 'idle'}
+          onClick={() => run('saving', props.onSave)}
+          title="Save key"
+        >
+          {busy === 'saving' ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          className="btn-sm btn-outline-sm"
+          disabled={busy !== 'idle'}
+          onClick={() => run('testing', props.onTest)}
+          title="Test connection"
+        >
+          {busy === 'testing' ? 'Testing…' : 'Test'}
+        </button>
+      </div>
+      {feedback ? (
+        <p className={`key-row-feedback ${feedback.ok ? 'key-row-feedback--ok' : 'key-row-feedback--error'}`}>
+          {feedback.message}
+        </p>
+      ) : null}
     </div>
   );
 }

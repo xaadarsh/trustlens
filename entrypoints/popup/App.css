@@ -20,6 +20,7 @@
   display: flex;
   justify-content: space-between;
   padding: 16px;
+  animation: tl-pop-in 320ms var(--ease-spring) both;
 }
 
 .popup-brand {
@@ -52,6 +53,7 @@
   letter-spacing: 0.03em;
   padding: 4px 10px;
   text-transform: uppercase;
+  transition: transform var(--dur-fast) var(--ease-spring);
 }
 
 .pill.pro {
@@ -68,6 +70,8 @@
   justify-content: space-between;
   margin: 16px 16px 12px;
   padding: 14px;
+  animation: tl-pop-in 320ms var(--ease-spring) both;
+  animation-delay: 60ms;
 }
 
 .toggle-label {
@@ -94,7 +98,8 @@
    reliably against both the earthy-green "on" track and the neutral "off"
    track, whereas a theme-linked color would go invisible against one of
    them (dark-mode --card, for instance, is nearly the same tone as the
-   off-track background). */
+   off-track background). Spring easing on the slide gives it a bouncy,
+   physical "thunk" rather than a flat linear glide. */
 .switch span::after {
   background: #FFFFFF;
   border-radius: 50%;
@@ -104,7 +109,7 @@
   left: 3px;
   position: absolute;
   top: 3px;
-  transition: transform var(--dur-fast) var(--ease-out);
+  transition: transform 320ms var(--ease-spring);
   width: 20px;
 }
 
@@ -124,6 +129,8 @@
   justify-content: space-between;
   margin: 0 16px 12px;
   padding: 12px 18px;
+  animation: tl-pop-in 320ms var(--ease-spring) both;
+  animation-delay: 120ms;
 }
 
 .flow-step {
@@ -133,16 +140,28 @@
   gap: 5px;
 }
 
+/* Decorative, not clickable (cursor stays default) — but they still react
+   to hover with the same ink-fill language as the medallion/primary button,
+   so the popup feels alive under the cursor even where nothing is a link. */
 .flow-icon-circle {
   align-items: center;
   background: var(--page);
   border: 1px solid var(--border);
   border-radius: 50%;
   color: var(--ink);
+  cursor: default;
   display: flex;
   height: 28px;
   justify-content: center;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-spring);
   width: 28px;
+}
+
+.flow-step:hover .flow-icon-circle {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--glyph);
+  transform: scale(1.15);
 }
 
 .flow-icon-circle svg {
@@ -163,6 +182,8 @@
   font-variant-numeric: tabular-nums;
   font-size: 11.5px;
   margin: 0 16px 12px;
+  animation: tl-pop-in 320ms var(--ease-spring) both;
+  animation-delay: 180ms;
 }
 
 button.primary {
@@ -175,12 +196,26 @@ button.primary {
   font-weight: 600;
   margin: 0 16px 16px;
   padding: 10px 10px;
-  transition: transform var(--dur-fast) var(--ease-out);
+  transition: transform 220ms var(--ease-spring), box-shadow 220ms var(--ease-out), opacity var(--dur-fast) var(--ease-out);
   width: calc(100% - 32px);
+  /* backwards, not both — a completed CSS animation with fill:both holds
+     its final keyframe transform FOREVER, at higher cascade priority than
+     any normal declaration, which permanently blocks :hover/:active from
+     ever changing transform on this element. backwards only holds the
+     pre-start (hidden) state during the delay, then hands control back to
+     normal CSS once the entrance finishes. */
+  animation: tl-pop-in 320ms var(--ease-spring) backwards;
+  animation-delay: 220ms;
+}
+
+button.primary:hover {
+  opacity: 0.92;
+  transform: translateY(-1px);
 }
 
 button.primary:active {
-  transform: scale(0.97);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--ink) 16%, transparent);
+  transform: scale(0.93);
 }
 
 @keyframes tl-popup-in {
@@ -189,5 +224,19 @@ button.primary:active {
   }
   to {
     opacity: 1;
+  }
+}
+
+/* Bold staggered entrance: slide + scale + fade, spring-eased so each block
+   settles with a slight overshoot rather than a flat stop — the same
+   signature feel as the TrustPanel medallion and Settings sections. */
+@keyframes tl-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }

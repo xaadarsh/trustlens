@@ -10,16 +10,92 @@ interface TrustPanelProps {
   page: ScrapedAmazonPage;
 }
 
+// Animation sequencing (ms) — mirrors the durations declared in
+// trustlens.css (tl-panel-in, tl-row-in). Computed here rather than
+// hardcoded because the medallion's hero sequence is supposed to start only
+// once every signal row has finished staggering in, and the row count
+// varies (2 population-only checks vs up to 6 with a full scraped sample) —
+// a fixed delay would either cut rows off or leave an awkward gap before
+// the medallion starts its story.
+const ROW_STAGGER_START_MS = 280; // matches .trustlens-panel's tl-panel-in duration
+const ROW_STAGGER_STEP_MS = 35;
+const ROW_ANIM_DURATION_MS = 240; // matches .trustlens-check's tl-row-in duration
+const MEDALLION_START_BUFFER_MS = 120; // breathing room after the last row settles, before the hero moment
+
+// The medallion's own four-act story, once it starts: a bold entrance pop,
+// a visible "thinking" beat, a punchy resolve into the real grade, then it
+// goes static (idle handled entirely in CSS from there — see trustlens.css).
+const MEDALLION_ENTER_MS = 550;
+const MEDALLION_THINKING_MS = 750;
+const MEDALLION_RESOLVE_MS = 300;
+
+// Cosmetic-only during the "thinking" cycle — never the real computed
+// grade, which is always taken from `analysis.grade` once resolve fires.
+const THINKING_CYCLE_GLYPHS = ['A', 'B', 'C', 'D', 'F'];
+const THINKING_CYCLE_STEP_MS = 80;
+
+function medallionStartDelay(checkCount: number): number {
+  const lastRowFinish = ROW_STAGGER_START_MS + Math.max(0, checkCount - 1) * ROW_STAGGER_STEP_MS + ROW_ANIM_DURATION_MS;
+  return lastRowFinish + MEDALLION_START_BUFFER_MS;
+}
+
+type MedallionPhase = 'pending' | 'enter' | 'thinking' | 'resolve' | 'idle';
+
 // Deliberately never themed off the user's Appearance setting or the OS —
 // this renders inline on top of Amazon's own (always-white) page, so a dark
 // card here would look broken regardless of preference. Light-only, always.
 export function TrustPanel({ page }: TrustPanelProps) {
   const analysis = useMemo(() => analyzeReviews(page), [page]);
+  // Frozen at first mount (lazy useState initializer, not useMemo) — this is
+  // a ONE-TIME reveal. If more reviews stream in later and the check count
+  // grows, re-deriving this from the new count would restart an in-flight
+  // sequence, which is a jarring re-trigger, not a premium feel.
+  const [startDelay] = useState(() => medallionStartDelay(analysis.checks.length));
+  const [medallionPhase, setMedallionPhase] = useState<MedallionPhase>('pending');
+  const [thinkingGlyph, setThinkingGlyph] = useState(THINKING_CYCLE_GLYPHS[0]);
   const [deepDive, setDeepDive] = useState('');
   const [deepDiveStatus, setDeepDiveStatus] = useState('');
   const [isPro, setIsPro] = useState(false);
   const [remainingTrials, setRemainingTrials] = useState(FREE_TRIAL_LIMIT);
   const [busy, setBusy] = useState(false);
+
+  // Drives the phase transitions: enter (bold pop) -> thinking (cycling
+  // letters + scan ring) -> resolve (punch-lock to the real grade) -> idle
+  // (static, gentle breathing handled by CSS). Reduced-motion skips straight
+  // to idle with the final grade already showing — no timers, no motion.
+  useEffect(() => {
+    const reducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reducedMotion) {
+      setMedallionPhase('idle');
+      return;
+    }
+
+    const enterAt = startDelay;
+    const thinkingAt = enterAt + MEDALLION_ENTER_MS;
+    const resolveAt = thinkingAt + MEDALLION_THINKING_MS;
+    const idleAt = resolveAt + MEDALLION_RESOLVE_MS;
+
+    const timers = [
+      setTimeout(() => setMedallionPhase('enter'), enterAt),
+      setTimeout(() => setMedallionPhase('thinking'), thinkingAt),
+      setTimeout(() => setMedallionPhase('resolve'), resolveAt),
+      setTimeout(() => setMedallionPhase('idle'), idleAt),
+    ];
+    return () => timers.forEach(clearTimeout);
+  }, [startDelay]);
+
+  // Cycles the displayed glyph only while actually in the "thinking" phase —
+  // a lightweight slot-machine flicker, purely cosmetic, never the real
+  // grade until resolve fires and displayedGlyph switches back to it.
+  useEffect(() => {
+    if (medallionPhase !== 'thinking') return;
+    let index = 0;
+    const interval = setInterval(() => {
+      index = (index + 1) % THINKING_CYCLE_GLYPHS.length;
+      setThinkingGlyph(THINKING_CYCLE_GLYPHS[index]);
+    }, THINKING_CYCLE_STEP_MS);
+    return () => clearInterval(interval);
+  }, [medallionPhase]);
 
   useEffect(() => {
     async function loadAccessState() {
@@ -90,8 +166,10 @@ export function TrustPanel({ page }: TrustPanelProps) {
       </div>
 
       <div className="trustlens-summary-row">
-        <div className="trustlens-medallion" data-grade={analysis.grade}>
-          <span className="trustlens-medallion-letter">{medallionGlyph(analysis.grade)}</span>
+        <div className="trustlens-medallion" data-grade={analysis.grade} data-medallion-phase={medallionPhase}>
+          <span className="trustlens-medallion-letter">
+            {medallionPhase === 'thinking' ? thinkingGlyph : medallionGlyph(analysis.grade)}
+          </span>
         </div>
         <div className="trustlens-summary-text">
           <p className="trustlens-title">Review confidence</p>
@@ -107,7 +185,7 @@ export function TrustPanel({ page }: TrustPanelProps) {
               className="trustlens-check"
               data-status={check.status}
               key={check.id}
-              style={{ animationDelay: `${100 + index * 35}ms` }}
+              style={{ animationDelay: `${ROW_STAGGER_START_MS + index * ROW_STAGGER_STEP_MS}ms` }}
             >
               <div className="trustlens-check-left">
                 <CheckStatusIcon status={check.status} />

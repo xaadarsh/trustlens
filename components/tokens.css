@@ -48,6 +48,10 @@
 
   /* ---- Motion ---- */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Signature bounce — the "premium" feel: entrances, button punches, and
+     sliding tab indicators all use this same curve across all 3 surfaces
+     so the whole product reads as one consistent motion language. */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --dur-fast: 150ms;
   --dur: 220ms;
   --dur-slow: 300ms;
@@ -84,7 +88,21 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :where(.trustlens-panel, .popup-shell, .settings-shell) :where(*, *::before, *::after) {
+  /* ::before/::after as separate comma-separated selectors, NOT bundled
+     inside :where()'s argument list (:where(*, *::before, *::after)) —
+     that form silently fails to match pseudo-elements in this Chromium
+     build, which let the medallion's idle shimmer (::before) keep
+     animating under reduced motion. Confirmed via computed-style sampling:
+     shimmer opacity was still flipping 0/0.85 seconds after load with the
+     bundled form; this explicit form fixes it. */
+  :where(.trustlens-panel, .popup-shell, .settings-shell) *,
+  :where(.trustlens-panel, .popup-shell, .settings-shell) *::before,
+  :where(.trustlens-panel, .popup-shell, .settings-shell) *::after {
+    /* Zeroing delay too, not just duration — otherwise a staggered/delayed
+       element (signal rows, the medallion reveal) would still sit
+       invisible for its full original delay before popping into its
+       near-instant animation, which reads as a stutter, not "instant". */
+    animation-delay: 0s !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;

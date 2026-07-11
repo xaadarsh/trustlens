@@ -14,7 +14,7 @@
   overflow: hidden;
   box-shadow: var(--shadow-card);
   padding: 14px 16px 10px;
-  animation: tl-panel-in var(--dur-slow) var(--ease-out) both;
+  animation: tl-panel-in 280ms var(--ease-out) both;
 }
 
 .trustlens-panel * {
@@ -54,7 +54,39 @@
 
 /* Medallion: rounded square, not a circle or stamp. Fill/glyph are the
    theme's ink/glyph pair, which stay maximally contrasting in both themes
-   (see tokens.css) — so the medallion always reads correctly. */
+   (see tokens.css) — so the medallion always reads correctly.
+
+   A four-act hero sequence, phase-driven by React state (TrustPanel.tsx
+   runs the actual timers — letter-cycling during "thinking" swaps real
+   text content every 80ms, which CSS keyframes can't do on their own):
+     pending  — hidden (scale 0), waiting for the signal rows to finish.
+     enter    — bold pop: scale 0 -> 1.25 overshoot -> 1, with a full
+                360° spin. tl-medallion-enter.
+     thinking — settled at scale 1; a pulsing ring appears around it
+                (::after, tl-medallion-scan-ring) while the letter
+                flickers through cosmetic glyphs.
+     resolve  — the medallion itself flashes a glow ring (tl-medallion-flash)
+                at the exact instant the letter locks to the real grade.
+     idle     — NOT static: loops forever, two layered effects so it
+                clearly reads as "alive" —
+                  1. tl-medallion-idle on the medallion itself: a bolder
+                     breathing scale + glow-pulse, ~2.8s/cycle.
+                  2. tl-medallion-shimmer on ::before: a diagonal light
+                     streak that sweeps across the badge, pauses, repeats.
+                Both smooth and slow enough to never compete for attention
+                on a page the user is actually reading.
+   Each phase's animation is scoped to its own [data-medallion-phase]
+   selector, so switching phases naturally starts the next animation fresh
+   — no cross-phase animation-delay math needed. */
+/* overflow:hidden — clips any pseudo-element content that would otherwise
+   extend past the box (belt-and-suspenders alongside the ::after ring now
+   being sized to fit inside rather than past the edge). Note this does NOT
+   contain box-shadow, which paints outside an element's own box regardless
+   of its own overflow — every glow/flash effect below uses `inset`
+   box-shadow specifically so it can't spill onto the title/subtitle text
+   sitting only 12px away (trustlens-summary-row's gap). A previous
+   non-inset glow reached ~19px (16px blur + 3px spread) and visibly washed
+   over that text. */
 .trustlens-medallion {
   align-items: center;
   background: var(--ink);
@@ -63,9 +95,65 @@
   flex-shrink: 0;
   height: 44px;
   justify-content: center;
+  opacity: 0;
+  overflow: hidden;
+  position: relative;
+  transform: scale(0);
   width: 44px;
-  animation: tl-medallion-in var(--dur) var(--ease-out) both;
-  animation-delay: 60ms;
+}
+
+.trustlens-medallion::after {
+  border: 2px solid var(--ink);
+  border-radius: inherit;
+  content: '';
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+/* Idle-only shimmer sweep — a separate pseudo-element from the ::after
+   "thinking" ring so the two phases never fight over the same layer.
+   clip-path (not overflow:hidden on the medallion) keeps this confined to
+   the rounded-square shape without also clipping ::after's ring, which
+   needs to extend past the box via a negative inset. */
+.trustlens-medallion::before {
+  background: linear-gradient(115deg, transparent 25%, color-mix(in srgb, var(--glyph) 65%, transparent) 50%, transparent 75%);
+  border-radius: inherit;
+  clip-path: inset(0 round var(--radius-medallion));
+  content: '';
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  transform: translateX(-130%);
+}
+
+.trustlens-medallion[data-medallion-phase='enter'] {
+  animation: tl-medallion-enter 550ms var(--ease-spring) forwards;
+}
+
+.trustlens-medallion[data-medallion-phase='thinking'],
+.trustlens-medallion[data-medallion-phase='resolve'],
+.trustlens-medallion[data-medallion-phase='idle'] {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.trustlens-medallion[data-medallion-phase='thinking']::after {
+  animation: tl-medallion-scan-ring 700ms ease-out infinite;
+}
+
+.trustlens-medallion[data-medallion-phase='resolve'] {
+  animation: tl-medallion-flash 300ms ease-out;
+}
+
+.trustlens-medallion[data-medallion-phase='idle'] {
+  animation: tl-medallion-idle 2800ms ease-in-out infinite;
+}
+
+.trustlens-medallion[data-medallion-phase='idle']::before {
+  animation: tl-medallion-shimmer 3200ms ease-in-out infinite;
 }
 
 .trustlens-medallion-letter {
@@ -74,6 +162,23 @@
   font-family: var(--font-display);
   font-size: 18px;
   font-weight: 600;
+  opacity: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.trustlens-medallion[data-medallion-phase='thinking'] .trustlens-medallion-letter {
+  animation: tl-letter-flicker 180ms ease-in-out infinite;
+  opacity: 1;
+}
+
+.trustlens-medallion[data-medallion-phase='resolve'] .trustlens-medallion-letter,
+.trustlens-medallion[data-medallion-phase='idle'] .trustlens-medallion-letter {
+  opacity: 1;
+}
+
+.trustlens-medallion[data-medallion-phase='resolve'] .trustlens-medallion-letter {
+  animation: tl-letter-punch 300ms var(--ease-spring);
 }
 
 .trustlens-medallion[data-grade='Insufficient data'] .trustlens-medallion-letter {
@@ -115,7 +220,7 @@
   gap: 8px;
   justify-content: space-between;
   padding: 1px 0;
-  animation: tl-row-in var(--dur) var(--ease-out) both;
+  animation: tl-row-in 240ms var(--ease-out) both;
 }
 
 .trustlens-check-left {
@@ -306,33 +411,135 @@
 @keyframes tl-panel-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(14px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-
-@keyframes tl-medallion-in {
-  from {
-    opacity: 0;
-    transform: scale(0.9);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
   }
 }
 
 @keyframes tl-row-in {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(8px) scale(0.98);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ACT 1 — enter: a real pop, not a fade. Scales past its resting size
+   (1.25 overshoot) while spinning a full 360° on the way up, then settles. */
+@keyframes tl-medallion-enter {
+  0% {
+    opacity: 0;
+    transform: scale(0) rotate(0deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.25) rotate(300deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(360deg);
+  }
+}
+
+/* ACT 2 — thinking: a pulsing ring reads as "scanning" while the letter
+   (tl-letter-flicker, below) cycles through cosmetic glyphs. */
+@keyframes tl-medallion-scan-ring {
+  0% {
+    opacity: 0.65;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.4);
+  }
+}
+
+@keyframes tl-letter-flicker {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.9);
+  }
+}
+
+/* ACT 3 — resolve: the letter punches in over-large then settles (the
+   payoff), while the medallion itself fires a glow ring outward at the
+   exact same moment — a "verdict locked" flash, not a passive swap. */
+@keyframes tl-letter-punch {
+  0% {
+    opacity: 0.5;
+    transform: scale(1.4);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* inset, not an outward ring — a non-inset box-shadow paints outside the
+   element's own box regardless of overflow:hidden on the medallion, which
+   is exactly what was washing this "verdict locked" flash over the
+   title/subtitle text 12px away. Inset reads as a bright flash filling the
+   badge from the rim inward instead — still a clear "locked in" beat,
+   fully contained. */
+@keyframes tl-medallion-flash {
+  0% {
+    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--glyph) 70%, transparent);
+  }
+  50% {
+    box-shadow: inset 0 0 14px 6px color-mix(in srgb, var(--glyph) 55%, transparent);
+  }
+  100% {
+    box-shadow: inset 0 0 0 0 transparent;
+  }
+}
+
+/* ACT 4 — idle: loops forever, deliberately bold enough to notice — a
+   breathing scale + glow-pulse every 2.8s (roughly heartbeat pace), plus a
+   separate shimmer sweep (below) running on its own clock. Never static.
+   inset for the same containment reason as tl-medallion-flash above. */
+@keyframes tl-medallion-idle {
+  0%, 100% {
+    box-shadow: inset 0 0 0 0 transparent;
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: inset 0 0 10px 2px color-mix(in srgb, var(--glyph) 30%, transparent);
+    transform: scale(1.035);
+  }
+}
+
+/* A diagonal light streak crosses the badge, then pauses before repeating —
+   the pause (~65% of the cycle) is what keeps a continuous effect from
+   reading as nervous or annoying; it's a periodic sweep, not a treadmill. */
+@keyframes tl-medallion-shimmer {
+  0% {
+    opacity: 0;
+    transform: translateX(-130%);
+  }
+  8% {
+    opacity: 0.85;
+  }
+  35% {
+    opacity: 0.85;
+    transform: translateX(130%);
+  }
+  36%, 100% {
+    opacity: 0;
+    transform: translateX(130%);
   }
 }
 
