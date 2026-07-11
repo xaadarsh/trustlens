@@ -1,0 +1,193 @@
+@import '../../components/tokens.css';
+
+.popup-shell {
+  background: var(--page);
+  box-sizing: border-box;
+  color: var(--ink);
+  font-family: var(--font-body);
+  padding: 0;
+  width: 340px;
+  animation: tl-popup-in var(--dur) var(--ease-out) both;
+}
+
+.popup-shell * {
+  box-sizing: border-box;
+}
+
+.popup-header {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  padding: 16px;
+}
+
+.popup-brand {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.popup-shield {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  height: 15px;
+  width: 15px;
+}
+
+.popup-header p {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.pill {
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 4px 10px;
+  text-transform: uppercase;
+}
+
+.pill.pro {
+  background: color-mix(in srgb, var(--pass) 16%, transparent);
+  color: var(--pass);
+}
+
+.toggle-row {
+  align-items: center;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  display: flex;
+  justify-content: space-between;
+  margin: 16px 16px 12px;
+  padding: 14px;
+}
+
+.toggle-label {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.switch input {
+  display: none;
+}
+
+.switch span {
+  background: var(--border);
+  border-radius: var(--radius-pill);
+  display: block;
+  height: 26px;
+  position: relative;
+  transition: background var(--dur-fast) var(--ease-out);
+  width: 46px;
+}
+
+/* Knob stays literal white in both themes — a fixed light dot reads
+   reliably against both the earthy-green "on" track and the neutral "off"
+   track, whereas a theme-linked color would go invisible against one of
+   them (dark-mode --card, for instance, is nearly the same tone as the
+   off-track background). */
+.switch span::after {
+  background: #FFFFFF;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(26, 26, 26, 0.3);
+  content: '';
+  height: 20px;
+  left: 3px;
+  position: absolute;
+  top: 3px;
+  transition: transform var(--dur-fast) var(--ease-out);
+  width: 20px;
+}
+
+.switch input:checked + span {
+  background: var(--pass);
+}
+
+.switch input:checked + span::after {
+  transform: translateX(20px);
+}
+
+.flow-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  display: flex;
+  justify-content: space-between;
+  margin: 0 16px 12px;
+  padding: 12px 18px;
+}
+
+.flow-step {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.flow-icon-circle {
+  align-items: center;
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--ink);
+  display: flex;
+  height: 28px;
+  justify-content: center;
+  width: 28px;
+}
+
+.flow-icon-circle svg {
+  height: 15px;
+  width: 15px;
+}
+
+.flow-label {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.trial-summary {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11.5px;
+  margin: 0 16px 12px;
+}
+
+button.primary {
+  background: var(--ink);
+  border: 0;
+  border-radius: var(--radius-control);
+  color: var(--glyph);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  margin: 0 16px 16px;
+  padding: 10px 10px;
+  transition: transform var(--dur-fast) var(--ease-out);
+  width: calc(100% - 32px);
+}
+
+button.primary:active {
+  transform: scale(0.97);
+}
+
+@keyframes tl-popup-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

@@ -1,0 +1,343 @@
+@import './tokens.css';
+
+.trustlens-panel {
+  box-sizing: border-box;
+  width: min(100%, 380px);
+  margin: 16px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.35;
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+  padding: 14px 16px 10px;
+  animation: tl-panel-in var(--dur-slow) var(--ease-out) both;
+}
+
+.trustlens-panel * {
+  box-sizing: border-box;
+}
+
+.trustlens-brand {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.trustlens-shield {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  height: 12px;
+  width: 12px;
+}
+
+.trustlens-wordmark {
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+/* Merged header row: medallion + title/subtitle */
+.trustlens-summary-row {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  margin: 0 0 10px;
+}
+
+/* Medallion: rounded square, not a circle or stamp. Fill/glyph are the
+   theme's ink/glyph pair, which stay maximally contrasting in both themes
+   (see tokens.css) — so the medallion always reads correctly. */
+.trustlens-medallion {
+  align-items: center;
+  background: var(--ink);
+  border-radius: var(--radius-medallion);
+  display: flex;
+  flex-shrink: 0;
+  height: 44px;
+  justify-content: center;
+  width: 44px;
+  animation: tl-medallion-in var(--dur) var(--ease-out) both;
+  animation-delay: 60ms;
+}
+
+.trustlens-medallion-letter {
+  color: var(--glyph);
+  display: block;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.trustlens-medallion[data-grade='Insufficient data'] .trustlens-medallion-letter {
+  font-size: 13px;
+}
+
+.trustlens-summary-text {
+  min-width: 0;
+}
+
+.trustlens-title {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 2px;
+}
+
+.trustlens-subtitle {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  margin: 0;
+}
+
+/* Signal checklist — collapsed single-line rows: icon + label left, status
+   chip right. No description text, no colored left-borders by default
+   (reserved for a future click/hover expansion). */
+.trustlens-checks {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 8px;
+}
+
+.trustlens-check {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 1px 0;
+  animation: tl-row-in var(--dur) var(--ease-out) both;
+}
+
+.trustlens-check-left {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.trustlens-check-icon {
+  flex-shrink: 0;
+  height: 14px;
+  width: 14px;
+}
+
+.trustlens-check[data-status='pass'] .trustlens-check-icon {
+  color: var(--pass);
+}
+
+.trustlens-check[data-status='risk'] .trustlens-check-icon {
+  color: var(--risk);
+}
+
+.trustlens-check[data-status='watch'] .trustlens-check-icon,
+.trustlens-check[data-status='unknown'] .trustlens-check-icon {
+  color: var(--text-secondary);
+}
+
+.trustlens-check-label {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Sample-size shortfall message needs room to breathe, not truncate. */
+.trustlens-check-label--wrap {
+  overflow: visible;
+  white-space: normal;
+}
+
+/* Status chip: tinted background derived straight from the status token,
+   text always full ink — never a colored/pastel text-on-dark combo. */
+.trustlens-check-chip {
+  border-radius: var(--radius-pill);
+  color: var(--ink);
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  text-transform: uppercase;
+}
+
+.trustlens-check[data-status='pass'] .trustlens-check-chip {
+  background: color-mix(in srgb, var(--pass) 16%, transparent);
+}
+
+.trustlens-check[data-status='risk'] .trustlens-check-chip {
+  background: color-mix(in srgb, var(--risk) 16%, transparent);
+}
+
+.trustlens-check[data-status='watch'] .trustlens-check-chip,
+.trustlens-check[data-status='unknown'] .trustlens-check-chip {
+  background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
+}
+
+/* Hairline dividers */
+.trustlens-divider {
+  background: var(--border);
+  border: 0;
+  height: 1px;
+  margin: 0 0 8px;
+}
+
+/* Plan status + upgrade pill */
+.trustlens-plan-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin: 0 0 8px;
+}
+
+.trustlens-plan-badge {
+  border-radius: var(--radius-pill);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 9px;
+  text-transform: uppercase;
+}
+
+.trustlens-plan-badge[data-plan='free'] {
+  background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+  color: var(--text-secondary);
+}
+
+.trustlens-plan-badge[data-plan='pro'] {
+  background: color-mix(in srgb, var(--pass) 16%, transparent);
+  color: var(--pass);
+}
+
+.trustlens-trials-inline {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.trustlens-button {
+  background: var(--ink);
+  border: 0;
+  border-radius: var(--radius-control);
+  color: var(--glyph);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  padding: 9px 16px;
+  width: 100%;
+  transition: transform var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+}
+
+.trustlens-button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.trustlens-button:disabled {
+  background: color-mix(in srgb, var(--text-secondary) 25%, transparent);
+  color: var(--text-secondary);
+  cursor: not-allowed;
+}
+
+.trustlens-status {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin: 0 0 8px;
+  text-align: center;
+}
+
+.trustlens-deep-dive {
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--ink);
+  margin: 0 0 8px;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+/* Footer */
+.trustlens-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.trustlens-disclaimer {
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.3;
+  margin: 0;
+}
+
+.trustlens-settings-link {
+  align-self: flex-end;
+  background: none;
+  border: 0;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0;
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  transition: text-decoration-color var(--dur-fast) var(--ease-out);
+}
+
+.trustlens-settings-link:hover {
+  text-decoration-color: currentColor;
+}
+
+@keyframes tl-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tl-medallion-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes tl-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 520px) {
+  .trustlens-panel {
+    width: 100%;
+  }
+}
