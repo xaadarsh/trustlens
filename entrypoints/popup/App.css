@@ -210,6 +210,7 @@
 .history-list {
   display: grid;
   gap: 7px;
+  grid-template-columns: minmax(0, 1fr);
   list-style: none;
   margin: 0;
   padding: 0;
@@ -219,6 +220,7 @@
   align-items: center;
   display: flex;
   gap: 8px;
+  min-width: 0;
 }
 
 .history-grade {
@@ -238,7 +240,9 @@
 
 .history-title {
   color: var(--ink);
+  flex: 1;
   font-size: 11.5px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

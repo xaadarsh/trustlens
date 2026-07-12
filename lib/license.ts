@@ -3,7 +3,7 @@ import type { LicenseStatus } from './types';
 
 const LICENSE_KEY = 'gradelens.license';
 const RECHECK_INTERVAL_MS = 1000 * 60 * 60 * 24;
-const GUMROAD_PRODUCT_ID = import.meta.env.WXT_GUMROAD_PRODUCT_ID || 'gradelens';
+const GUMROAD_PRODUCT_ID = 'UUbUxfEn2z_kWSWiTqVMWQ==';
 
 const DEFAULT_STATUS: LicenseStatus = {
   pro: false,
@@ -68,12 +68,17 @@ async function verifyLicense(licenseKey: string | undefined, persist: boolean): 
     if (persist) await browser.storage.local.set({ [LICENSE_KEY]: status });
     return status;
   } catch (error) {
+    // Network failure must never demote an already-activated Pro user back to
+    // free — retry soon instead of persisting a false "not pro" verdict.
+    const previous = await getCachedLicenseStatus();
     const fallback: LicenseStatus = {
-      pro: false,
+      ...previous,
       licenseKey,
       checkedAt: Date.now(),
-      nextCheckAt: Date.now() + RECHECK_INTERVAL_MS,
-      message: error instanceof Error ? error.message : 'License check failed.',
+      nextCheckAt: Date.now() + 1000 * 60 * 15,
+      message: previous.pro
+        ? 'Could not reach Gumroad to re-verify — staying on Pro until the next check.'
+        : 'Could not reach the license server. Check your connection and try again.',
     };
     if (persist) await browser.storage.local.set({ [LICENSE_KEY]: fallback });
     return fallback;

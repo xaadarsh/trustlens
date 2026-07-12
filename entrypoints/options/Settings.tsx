@@ -12,7 +12,7 @@ import { checkProStatus, getCachedLicenseStatus, saveLicenseKey } from '@/lib/li
 import { FREE_TRIAL_LIMIT, getRemainingTrials } from '@/lib/usage-limits';
 import type { DeepAnalysisProvider, KeyTestResult, LicenseStatus, StoredSettings, ThemePreference } from '@/lib/types';
 
-const PRIVACY_POLICY_URL = 'https://xaadarsh.com/gradelens/privacy';
+const PRIVACY_POLICY_URL = 'https://xaadarsh.github.io/gradelens-privacy/';
 const SUPPORT_EMAIL = 'aadarshraj380@gmail.com';
 
 function Settings() {
