@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client';
 import { TrustPanel } from '@/components/TrustPanel';
 import '@/components/trustlens.css';
 import { getSettings } from '@/lib/byo-key';
-import { MIN_SAMPLE_SIZE } from '@/lib/statistical-engine';
 import type { RatingHistogramEntry, ReviewSample, ScrapedAmazonPage } from '@/lib/types';
 
 export default defineContentScript({
@@ -28,18 +27,57 @@ export default defineContentScript({
   },
 });
 
-const LAZY_LOAD_TIMEOUT_MS = 9000;
 const MUTATION_DEBOUNCE_MS = 500;
 
-// Scanning more review pages beyond the one Amazon renders on the product
-// page itself: capped deliberately low (not the originally-discussed
-// 100-150) to keep this polite — a handful of extra fetches, not a scrape.
-const MAX_TOTAL_REVIEWS = 45;
-const MAX_REVIEW_PAGES = 5;
+// One shared cap across both ways the sample grows beyond Amazon's initial
+// on-page render: organic accumulation (real navigation, see
+// startOrganicAccumulation) and opportunistic pagination (see
+// enhanceWithMoreReviews). Generous relative to the pagination fetch alone
+// since organic growth costs Amazon nothing extra — every card it picks up
+// was already served to the user's own browsing — but still bounded so a
+// long browsing session can't grow the in-memory sample without limit.
+const MAX_ACCUMULATED_REVIEWS = 120;
+
+// Pagination is kept deliberately small and polite (a handful of extra
+// fetches, not a scrape) — organic accumulation is the primary way the
+// sample now grows past the initial ~10-13 cards.
+const MAX_REVIEW_PAGES = 3;
 const FETCH_DELAY_MIN_MS = 400;
 const FETCH_DELAY_MAX_MS = 800;
 
 type PageAnchors = { mountAnchor: Element | null };
+type AccumulatedPage = ScrapedAmazonPage & PageAnchors;
+
+interface ReviewAccumulator {
+  page: AccumulatedPage;
+  seenIds: Set<string>;
+}
+
+function createAccumulator(initialPage: AccumulatedPage): ReviewAccumulator {
+  return { page: initialPage, seenIds: new Set(initialPage.reviews.map((r) => r.id)) };
+}
+
+// Merges newly-found review cards into the shared accumulator, deduping by
+// id and stopping at MAX_ACCUMULATED_REVIEWS. Both organic accumulation and
+// opportunistic pagination read/write the same accumulator object, and
+// since each call is synchronous (JS is single-threaded, no interleaving
+// mid-merge), the two channels never stomp on each other's progress even
+// though they run concurrently.
+function mergeReviews(acc: ReviewAccumulator, candidates: ReviewSample[]): number {
+  let added = 0;
+  const next = [...acc.page.reviews];
+  for (const candidate of candidates) {
+    if (acc.seenIds.has(candidate.id)) continue;
+    if (next.length >= MAX_ACCUMULATED_REVIEWS) break;
+    acc.seenIds.add(candidate.id);
+    next.push(candidate);
+    added++;
+  }
+  if (added > 0) {
+    acc.page = { ...acc.page, reviews: next, reviewsScanned: next.length };
+  }
+  return added;
+}
 
 async function mountWhenReady() {
   const existing = document.getElementById('trustlens-root');
@@ -58,164 +96,120 @@ async function mountWhenReady() {
   const reactRoot = createRoot(root);
   reactRoot.render(<TrustPanel page={initialPage} />);
 
-  // Some Amazon page variants fetch the review list via AJAX shortly after
-  // initial render, so a single scrape at document_idle can legitimately
-  // find fewer review cards than actually exist — including exactly zero,
-  // but also just "some, but not enough for a grade" (e.g. 4 of 14 on
-  // initial load). Trigger the watch whenever we're short of
-  // MIN_SAMPLE_SIZE, not only when reviews.length is literally 0 —
-  // otherwise a page that starts with a handful never gets a chance to grow
-  // toward a real grade even though more may lazy-load in.
-  //
-  // This purely WATCHES for that AJAX content to appear on its own (via
-  // MutationObserver) — it never scrolls or otherwise nudges the page.
-  // Never move the user's scroll position for this; enhanceWithMoreReviews
-  // below already gets more reviews via a direct network fetch to Amazon's
-  // /product-reviews/ endpoint, independent of viewport/scroll entirely.
-  let currentPage: ScrapedAmazonPage & PageAnchors = initialPage;
-  if (initialPage.reviews.length < MIN_SAMPLE_SIZE) {
-    const lazyLoadedPage = await watchForLazyReviews(reactRoot, initialPage);
-    if (lazyLoadedPage) currentPage = lazyLoadedPage;
-  }
+  const acc = createAccumulator(initialPage);
 
-  // Sequenced after the lazy-load watch settles (success or timeout) so only
-  // one async enhancement re-renders the panel at a time.
-  await enhanceWithMoreReviews(reactRoot, currentPage);
+  // Organic accumulation runs for the rest of the page's life, picking up
+  // whatever Amazon renders as the user actually browses — including the
+  // AJAX lazy-load some page variants do shortly after document_idle. It
+  // never scrolls or otherwise nudges the page itself.
+  startOrganicAccumulation(reactRoot, acc);
+
+  // Opportunistic pagination runs once, independent of organic accumulation
+  // — both read/write the same accumulator, so their merges never conflict.
+  await enhanceWithMoreReviews(reactRoot, acc);
 }
 
-function watchForLazyReviews(
-  reactRoot: ReturnType<typeof createRoot>,
-  startingPage: ScrapedAmazonPage & PageAnchors,
-): Promise<(ScrapedAmazonPage & PageAnchors) | null> {
-  return new Promise((resolve) => {
-    let settled = false;
-    let latestPage: (ScrapedAmazonPage & PageAnchors) | null = null;
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+// As the user naturally scrolls or clicks through Amazon's own review
+// section (real page navigation — never a background fetch), Amazon renders
+// more review cards into the DOM. This watches for that via MutationObserver
+// and folds any newly-rendered cards straight into the shared sample,
+// re-rendering (and so re-grading) live as it grows. It's the safe way to
+// exceed the initial ~10-13 scraped cards without tripping Amazon's bot
+// gate, since every card it picks up was already served to the user's own
+// browsing — nothing here fetches or scrolls anything.
+//
+// Deliberately no timeout: genuine scrolling has no fixed schedule. It stops
+// itself once MAX_ACCUMULATED_REVIEWS is reached, or on page unload.
+function startOrganicAccumulation(reactRoot: ReturnType<typeof createRoot>, acc: ReviewAccumulator): void {
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const cleanup = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      clearTimeout(timeoutId);
-      mutationObserver.disconnect();
-    };
-
-    const attemptRescrape = () => {
-      if (settled) return;
-      const updatedPage = scrapeAmazonPage(document);
-      const bestSoFar = latestPage ? latestPage.reviews.length : startingPage.reviews.length;
-      if (updatedPage.reviews.length <= bestSoFar) return;
-
-      latestPage = updatedPage;
-      console.log(
-        `[TrustLens] Lazy-loaded reviews detected after DOM mutation — re-scraped ${updatedPage.reviews.length} review(s), re-rendering panel in place.`,
-      );
-      reactRoot.render(<TrustPanel page={updatedPage} />);
-
-      if (updatedPage.reviews.length >= MIN_SAMPLE_SIZE) {
-        settled = true;
-        cleanup();
-        resolve(updatedPage);
-      }
-    };
-
-    const mutationObserver = new MutationObserver(() => {
-      if (settled) return;
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(attemptRescrape, MUTATION_DEBOUNCE_MS);
-    });
-    mutationObserver.observe(document.body, { childList: true, subtree: true });
-
-    const timeoutId = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      const finalCount = latestPage ? latestPage.reviews.length : startingPage.reviews.length;
-      console.log(
-        `[TrustLens] Lazy-load watch timed out after ${LAZY_LOAD_TIMEOUT_MS / 1000}s — ${finalCount} review(s) found (started at ${startingPage.reviews.length}).`,
-      );
-      resolve(latestPage);
-    }, LAZY_LOAD_TIMEOUT_MS);
+  const observer = new MutationObserver(() => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(rescan, MUTATION_DEBOUNCE_MS);
   });
+
+  function cleanup() {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    observer.disconnect();
+    window.removeEventListener('pagehide', cleanup);
+  }
+
+  function rescan() {
+    if (acc.page.reviews.length >= MAX_ACCUMULATED_REVIEWS) {
+      cleanup();
+      return;
+    }
+    const cards = queryAll('reviewCards', document);
+    const candidates = cards.map((card, index) => scrapeReview(card, acc.page.reviews.length + index, queryFirst));
+    const added = mergeReviews(acc, candidates);
+    if (added > 0) {
+      console.log(
+        `[TrustLens] Organic accumulation: ${added} newly-rendered review card(s) found while browsing — sample now ${acc.page.reviews.length}, re-grading.`,
+      );
+      reactRoot.render(<TrustPanel page={acc.page} />);
+    }
+  }
+
+  observer.observe(document.body, { childList: true, subtree: true });
+  window.addEventListener('pagehide', cleanup, { once: true });
 }
 
 // Amazon's product page itself only ever renders a handful of review cards.
-// To get closer to a useful sample, fetch a few pages of Amazon's own
+// To get closer to a useful sample, fetch a couple of pages of Amazon's own
 // dedicated /product-reviews listing (sorted most-recent) and merge in
-// whatever new reviews turn up — capped and paced deliberately conservatively.
-// Any failure, gate, or empty page stops the scan immediately and keeps
-// whatever was already gathered; this never retries or loops against Amazon.
-async function enhanceWithMoreReviews(
-  reactRoot: ReturnType<typeof createRoot>,
-  startingPage: ScrapedAmazonPage & PageAnchors,
-): Promise<void> {
-  if (!startingPage.asin) return;
-  if (startingPage.reviews.length >= MAX_TOTAL_REVIEWS) return;
-
-  const seenIds = new Set(startingPage.reviews.map((r) => r.id));
-  const merged: ReviewSample[] = [...startingPage.reviews];
+// whatever new reviews turn up — capped and paced deliberately
+// conservatively. Any failure, gate, or empty page stops the scan
+// immediately and silently: it never surfaces an error to the user, and
+// never retries or loops against Amazon — organic accumulation above keeps
+// working regardless of whether this succeeds.
+async function enhanceWithMoreReviews(reactRoot: ReturnType<typeof createRoot>, acc: ReviewAccumulator): Promise<void> {
+  if (!acc.page.asin) return;
 
   for (let pageNumber = 1; pageNumber <= MAX_REVIEW_PAGES; pageNumber++) {
-    if (merged.length >= MAX_TOTAL_REVIEWS) break;
+    if (acc.page.reviews.length >= MAX_ACCUMULATED_REVIEWS) break;
 
     await delay(randomBetween(FETCH_DELAY_MIN_MS, FETCH_DELAY_MAX_MS));
 
     let html: string;
     try {
-      const url = `https://${location.hostname}/product-reviews/${startingPage.asin}/?ie=UTF8&reviewerType=all_reviews&sortBy=recent&pageNumber=${pageNumber}`;
+      const url = `https://${location.hostname}/product-reviews/${acc.page.asin}/?ie=UTF8&reviewerType=all_reviews&sortBy=recent&pageNumber=${pageNumber}`;
       const res = await fetch(url);
       if (res.redirected && /\/ap\/signin/.test(res.url)) {
-        console.log(`[TrustLens] Additional review pages require signing in to Amazon (redirected to ${new URL(res.url).pathname}) — stopping scan, keeping ${merged.length} review(s).`);
-        break;
+        console.log(`[TrustLens] Additional review pages require signing in to Amazon (redirected to ${new URL(res.url).pathname}) — stopping scan silently, keeping ${acc.page.reviews.length} review(s).`);
+        return;
       }
       if (!res.ok) {
-        console.log(`[TrustLens] Additional review page ${pageNumber} fetch failed (HTTP ${res.status}) — stopping scan, keeping ${merged.length} review(s).`);
-        break;
+        console.log(`[TrustLens] Additional review page ${pageNumber} fetch failed (HTTP ${res.status}) — stopping scan silently, keeping ${acc.page.reviews.length} review(s).`);
+        return;
       }
       html = await res.text();
     } catch (err) {
-      console.log(`[TrustLens] Additional review page ${pageNumber} fetch errored — stopping scan, keeping ${merged.length} review(s).`, err);
-      break;
+      console.log(`[TrustLens] Additional review page ${pageNumber} fetch errored — stopping scan silently, keeping ${acc.page.reviews.length} review(s).`, err);
+      return;
     }
 
     const parsedDoc = new DOMParser().parseFromString(html, 'text/html');
 
     if (isSignInGated(parsedDoc)) {
-      console.log(`[TrustLens] Review page ${pageNumber} requires sign-in — stopping scan, keeping ${merged.length} review(s).`);
-      break;
+      console.log(`[TrustLens] Review page ${pageNumber} requires sign-in — stopping scan silently, keeping ${acc.page.reviews.length} review(s).`);
+      return;
     }
 
     const cards = queryAll('reviewCards', parsedDoc);
     if (cards.length === 0) {
-      console.log(`[TrustLens] No review cards found on page ${pageNumber} — stopping scan, keeping ${merged.length} review(s).`);
-      break;
+      console.log(`[TrustLens] No review cards found on page ${pageNumber} — stopping scan, keeping ${acc.page.reviews.length} review(s).`);
+      return;
     }
 
-    let addedThisPage = 0;
-    for (const card of cards) {
-      const review = scrapeReview(card, merged.length, queryFirst);
-      if (!seenIds.has(review.id)) {
-        seenIds.add(review.id);
-        merged.push(review);
-        addedThisPage++;
-        if (merged.length >= MAX_TOTAL_REVIEWS) break;
-      }
+    const candidates = cards.map((card, index) => scrapeReview(card, acc.page.reviews.length + index, queryFirst));
+    const added = mergeReviews(acc, candidates);
+    if (added === 0) {
+      console.log(`[TrustLens] Page ${pageNumber} returned no new reviews (likely end of pagination) — stopping scan, keeping ${acc.page.reviews.length} review(s).`);
+      return;
     }
 
-    if (addedThisPage === 0) {
-      console.log(`[TrustLens] Page ${pageNumber} returned no new reviews (likely end of pagination) — stopping scan, keeping ${merged.length} review(s).`);
-      break;
-    }
-  }
-
-  if (merged.length > startingPage.reviews.length) {
-    const updatedPage: ScrapedAmazonPage & PageAnchors = {
-      ...startingPage,
-      reviews: merged,
-      reviewsScanned: merged.length,
-    };
-    console.log(`[TrustLens] Additional review scan complete — now have ${merged.length} of ${updatedPage.totalReviews} total review(s).`);
-    reactRoot.render(<TrustPanel page={updatedPage} />);
-  } else {
-    console.log('[TrustLens] Additional review scan found no new reviews beyond the initial page.');
+    console.log(`[TrustLens] Additional review page ${pageNumber} added ${added} new review(s) — now have ${acc.page.reviews.length} of ${acc.page.totalReviews} total review(s).`);
+    reactRoot.render(<TrustPanel page={acc.page} />);
   }
 }
 

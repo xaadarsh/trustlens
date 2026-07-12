@@ -99,7 +99,10 @@ async function main() {
 
     const popupBodyText = await popupPage.locator('body').innerText();
     results.popup_has_toggle = /Enabled|Disabled/.test(popupBodyText);
-    results.popup_has_badge = /Free|Pro/.test(popupBodyText);
+    // Case-insensitive: the pill badge is styled text-transform: uppercase
+    // (App.css), so Playwright's innerText() returns "FREE"/"PRO", not the
+    // "Free"/"Pro" literal in the JSX.
+    results.popup_has_badge = /Free|Pro/i.test(popupBodyText);
     results.popup_has_open_settings = /Open Settings/.test(popupBodyText);
     results.popup_has_no_key_inputs = (await popupPage.locator('input[type="password"], input[type="text"]').count()) === 0;
     log(`Popup check: toggle=${results.popup_has_toggle}, badge=${results.popup_has_badge}, openSettingsBtn=${results.popup_has_open_settings}, noKeyInputs=${results.popup_has_no_key_inputs}`);
@@ -114,9 +117,19 @@ async function main() {
 
     const optionsBodyText = await optionsPage.locator('body').innerText();
     results.options_has_gemini_key = /Gemini API key/.test(optionsBodyText);
-    results.options_has_openai_key = /OpenAI API key/.test(optionsBodyText);
     results.options_has_provider_toggle = /Deep-dive provider/.test(optionsBodyText);
-    results.options_has_license = /Gumroad license key/.test(optionsBodyText);
+    // License section no longer says "Gumroad" in the UI copy (only
+    // internally, as the product ID in lib/license.ts) — check for the
+    // section itself and its license-key input instead.
+    results.options_has_license = /License/i.test(optionsBodyText) && (await optionsPage.locator('input[placeholder="XXXX-XXXX-XXXX"]').count()) > 0;
+
+    // The OpenAI key field only renders once the OpenAI provider tab is
+    // selected (Gemini is the default tab), so switch to it before checking.
+    await optionsPage.locator('button:has-text("OpenAI")').first().click();
+    await optionsPage.waitForTimeout(200);
+    const optionsBodyTextOpenAI = await optionsPage.locator('body').innerText();
+    results.options_has_openai_key = /OpenAI API key/.test(optionsBodyTextOpenAI);
+
     log(`Options check: geminiKey=${results.options_has_gemini_key}, openaiKey=${results.options_has_openai_key}, provider=${results.options_has_provider_toggle}, license=${results.options_has_license}`);
     await optionsPage.close();
 
@@ -142,17 +155,19 @@ async function main() {
 
     let initialGradeText = '';
     if (panelVisibleEnabled) {
-      initialGradeText = (await amazonPage.locator('.trustlens-grade').textContent().catch(() => '')) ?? '';
+      initialGradeText = (await amazonPage.locator('.trustlens-medallion-letter').textContent().catch(() => '')) ?? '';
       log(`Initial grade badge text (before lazy-load window): "${initialGradeText.trim()}"`);
     }
 
-    // Give the MutationObserver/IntersectionObserver watch (9s timeout + 500ms
-    // debounce in content.tsx) time to resolve before checking the final state.
-    log('Waiting up to ~11s for the lazy-load watch window to resolve...');
+    // Organic accumulation (persistent MutationObserver, 500ms debounce) and
+    // opportunistic pagination both run in the background with no fixed
+    // timeout — give them a window to pick up an initial batch before
+    // checking state.
+    log('Waiting ~11s for organic accumulation / pagination to pick up an initial batch...');
     await amazonPage.waitForTimeout(11000);
 
-    const finalGradeText = (await amazonPage.locator('.trustlens-grade').textContent().catch(() => '')) ?? '';
-    const reviewCountText = (await amazonPage.locator('.trustlens-summary').textContent().catch(() => '')) ?? '';
+    const finalGradeText = (await amazonPage.locator('.trustlens-medallion-letter').textContent().catch(() => '')) ?? '';
+    const reviewCountText = (await amazonPage.locator('.trustlens-subtitle').textContent().catch(() => '')) ?? '';
     log(`Final grade badge text (after lazy-load window): "${finalGradeText.trim()}"`);
     log(`Final review-count summary: "${reviewCountText.trim()}"`);
     results.real_grade_after_lazy_load = finalGradeText.trim().length > 0 && !finalGradeText.includes('Insufficient data');

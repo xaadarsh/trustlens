@@ -86,15 +86,16 @@ async function testOneProduct(product) {
     result.panelMounted = visible;
 
     if (visible) {
-      // Generous wait: lazy-load watch (up to 9s) + additional-page fetches
-      // (up to 5 pages x 400-800ms + fetch time), then re-render settles.
+      // Generous wait: organic accumulation (persistent, no fixed timeout)
+      // + opportunistic pagination (up to 3 pages x 400-800ms + fetch time).
       await page.waitForTimeout(35000);
 
       const subtitle = (await page.locator('.trustlens-subtitle').textContent().catch(() => '')) ?? '';
       const gradeGlyph = (await page.locator('.trustlens-medallion-letter').textContent().catch(() => '')) ?? '';
-      const match = subtitle.match(/([\d,]+)\s+of\s+([\d,]+)\s+scanned/);
-      result.reviewsScanned = match ? Number(match[1].replace(/,/g, '')) : null;
-      result.totalReviews = match ? Number(match[2].replace(/,/g, '')) : null;
+      const totalMatch = subtitle.match(/Based on ([\d,]+) reviews/);
+      const scannedMatch = subtitle.match(/([\d,]+)\s+(?:reviews\s+)?analyzed in detail/);
+      result.reviewsScanned = scannedMatch ? Number(scannedMatch[1].replace(/,/g, '')) : null;
+      result.totalReviews = totalMatch ? Number(totalMatch[1].replace(/,/g, '')) : null;
       result.grade = gradeGlyph.trim();
       result.subtitleRaw = subtitle.trim();
 

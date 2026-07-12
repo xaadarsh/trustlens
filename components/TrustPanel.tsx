@@ -242,13 +242,20 @@ function medallionGlyph(grade: TrustGrade): string {
 
 // Population-first framing, matching how the grade is actually computed now
 // (see analyzeReviews): "Based on N reviews" reflects Amazon's full review
-// count, not just the handful of cards TrustLens managed to scrape.
+// count, not just the handful of cards TrustLens managed to scrape. The
+// "analyzed in detail" count is reviewsScanned, which grows live as organic
+// accumulation and opportunistic pagination add more cards (see
+// entrypoints/content.tsx) — this re-renders on every growth, so the number
+// visibly climbs without a page reload.
 function subtitleText(page: ScrapedAmazonPage): string {
   if (page.averageRating !== null && page.totalReviews > 0) {
-    return `Based on ${page.totalReviews.toLocaleString()} reviews (${page.averageRating.toFixed(1)}★)`;
+    const base = `Based on ${page.totalReviews.toLocaleString()} reviews (${page.averageRating.toFixed(1)}★)`;
+    return page.reviewsScanned > 0
+      ? `${base} · ${page.reviewsScanned.toLocaleString()} analyzed in detail`
+      : base;
   }
   if (page.reviewsScanned > 0) {
-    return `${page.reviewsScanned.toLocaleString()} reviews scanned`;
+    return `${page.reviewsScanned.toLocaleString()} reviews analyzed in detail`;
   }
   return 'Limited review data available';
 }

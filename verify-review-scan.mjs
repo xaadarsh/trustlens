@@ -1,8 +1,9 @@
-// verify-review-scan.mjs — one-off verification for the expanded review-scan
-// feature (additional /product-reviews page fetches beyond the initial
-// on-page scrape). Real Brave, single product page, generous wait since this
-// now chains: initial scrape -> optional lazy-load watch (up to 9s) ->
-// additional-page fetch (up to 5 pages x 400-800ms delay + fetch time).
+// verify-review-scan.mjs — one-off verification for the review-scan feature:
+// opportunistic pagination (additional /product-reviews page fetches beyond
+// the initial on-page scrape, capped at 3 pages x 400-800ms delay + fetch
+// time) running alongside organic accumulation (persistent MutationObserver,
+// no fixed timeout — see startOrganicAccumulation in content.tsx). Real
+// Brave, single product page, generous wait to let both settle.
 
 import { chromium } from '@playwright/test';
 import { execSync } from 'node:child_process';
