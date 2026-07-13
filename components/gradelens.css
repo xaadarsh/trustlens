@@ -90,6 +90,7 @@
 .gradelens-medallion {
   align-items: center;
   background: var(--ink);
+  border: 2px solid transparent;
   border-radius: var(--radius-medallion);
   display: flex;
   flex-shrink: 0;
@@ -103,14 +104,19 @@
   width: 44px;
 }
 
-/* Item 4: a bold solid-black "B" looks exactly as authoritative as a solid-
-   black "A" — the medallion's visual weight should match how much the
-   grade can actually be leaned on. Softened fill (not opacity — opacity is
-   already the phase-choreography property, see the four-act sequence
-   above, so touching it here would fight that animation) reads as a
-   visibly less certain badge without breaking the entrance/idle timeline. */
+/* Bold solid-black fill at every confidence level — the letter must never
+   look faded or greyed out, since a diluted fill reads as "disabled" or
+   "failed to load," not "hold this grade lightly" (confirmed the hard way:
+   an earlier 50%-toward-page fill did exactly that on real low-confidence
+   products). Low confidence gets a thin warm ring instead — same --warn
+   tone as the confidence chip beside it, so the two reinforce each other —
+   border rather than box-shadow specifically because box-shadow is already
+   fully owned by the resolve/idle phase animations below and would get
+   silently overridden by them. The chip and verdict line still carry the
+   actual meaning in words; this is a quiet visual echo, not the primary
+   signal. */
 .gradelens-medallion[data-confidence='Low'] {
-  background: color-mix(in srgb, var(--ink) 50%, var(--page));
+  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
 }
 
 .gradelens-medallion::after {
