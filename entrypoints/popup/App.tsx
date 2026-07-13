@@ -12,7 +12,10 @@ import { FREE_TRIAL_LIMIT, getRemainingTrials } from '@/lib/usage-limits';
 import type { StoredSettings } from '@/lib/types';
 import './App.css';
 
-const HISTORY_PREVIEW_COUNT = 5;
+// Popup is a fixed-height quick-glance surface, not a scrolling list — more
+// history stays in storage (lib/history.ts's own 100-entry cap), but only
+// the 3 most recent checks ever render here so the popup can't grow tall.
+const HISTORY_PREVIEW_COUNT = 3;
 
 // Deliberately never themed off the user's Appearance setting or the OS —
 // same reasoning as TrustPanel. Light-only, always.

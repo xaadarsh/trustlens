@@ -8,6 +8,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { getSettings, maskApiKey, saveSettings, testApiKey } from '@/lib/byo-key';
+import { clearHistory } from '@/lib/history';
 import { checkProStatus, getCachedLicenseStatus, saveLicenseKey } from '@/lib/license';
 import { FREE_TRIAL_LIMIT, getRemainingTrials } from '@/lib/usage-limits';
 import type { DeepAnalysisProvider, KeyTestResult, LicenseStatus, StoredSettings, ThemePreference } from '@/lib/types';
@@ -23,6 +24,7 @@ function Settings() {
   const [license, setLicense] = useState<LicenseStatus>({ pro: false, message: 'Free plan' });
   const [remainingTrials, setRemainingTrials] = useState(FREE_TRIAL_LIMIT);
   const [status, setStatus] = useState('');
+  const [historyStatus, setHistoryStatus] = useState('');
 
   const version = browser.runtime.getManifest().version;
 
@@ -106,6 +108,15 @@ function Settings() {
       setStatus(result.message);
     } catch {
       setStatus('Could not verify the license key. Check your connection and try again.');
+    }
+  }
+
+  async function handleClearHistory() {
+    try {
+      await clearHistory();
+      setHistoryStatus('Local grading history cleared.');
+    } catch {
+      setHistoryStatus('Could not clear history — try again.');
     }
   }
 
@@ -207,6 +218,18 @@ function Settings() {
                 <button className={settings.theme === 'dark' ? 'active' : ''} onClick={() => updateTheme('dark')}>Dark</button>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Privacy */}
+        <div className="settings-section">
+          <p className="section-label"><PrivacyIcon /> Privacy</p>
+          <div className="card">
+            <div className="row">
+              <span className="row-label">Local grading history</span>
+              <button className="btn-sm btn-outline-sm" onClick={handleClearHistory}>Clear history</button>
+            </div>
+            {historyStatus ? <p className="key-row-feedback key-row-feedback--ok">{historyStatus}</p> : null}
           </div>
         </div>
 
@@ -355,6 +378,15 @@ function AppearanceIcon() {
     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <circle cx="12" cy="12" r="4.5" stroke="currentColor" strokeWidth="1.6" />
       <path d="M12 2.5v2.2M12 19.3v2.2M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PrivacyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M12 2.5L4.5 5.4v5.7c0 5.2 3.3 9.6 7.5 11 4.2-1.4 7.5-5.8 7.5-11V5.4L12 2.5z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
+      <path d="M8.7 12.3l2.2 2.2 4.4-4.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
