@@ -27,6 +27,29 @@ export async function runDeepAnalysis(input: DeepAnalysisInput): Promise<string>
     : runOpenAI(input.apiKey, prompt);
 }
 
+// A hung request must never leave the panel stuck on "Running deep dive…"
+// forever with the button disabled — a slow/dead network or a provider
+// stall would otherwise do exactly that (plain fetch has no timeout). The
+// abort surfaces as a clean, friendly Error the deep-dive handler shows,
+// and because it throws *before* incrementUsage() runs, a timeout never
+// burns a free-trial analysis.
+const DEEP_DIVE_TIMEOUT_MS = 30000;
+
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DEEP_DIVE_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('The AI request timed out. Please try again.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function buildPrompt(page: ScrapedAmazonPage, statistical: StatisticalAnalysis): string {
   const reviewLines = page.reviews.slice(0, 12).map((review, index) => {
     return `${index + 1}. ${review.rating ?? 'n/a'} stars | verified=${review.verified} | vine=${review.vine} | date=${review.date ?? 'unknown'} | ${review.title} ${review.body}`.slice(0, 900);
@@ -80,7 +103,7 @@ interface OpenAIResponse {
 }
 
 async function runGemini(apiKey: string, prompt: string): Promise<string> {
-  const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent', {
+  const response = await fetchWithTimeout('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -117,7 +140,7 @@ async function runGemini(apiKey: string, prompt: string): Promise<string> {
 }
 
 async function runOpenAI(apiKey: string, prompt: string): Promise<string> {
-  const response = await fetch('https://api.openai.com/v1/responses', {
+  const response = await fetchWithTimeout('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

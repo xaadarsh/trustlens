@@ -44,15 +44,31 @@ function basePage(overrides) {
   };
 }
 
+// Varied single-word vocabulary so synthetic samples don't falsely trip the
+// repeated-language check (which flags four-word phrases repeating >=3x —
+// real reviews of a genuine product don't share those). Bodies are built
+// from four independently-rotating pools with different strides so no
+// four-word run recurs across the sample.
+const ADJECTIVES = ['excellent', 'solid', 'reliable', 'sturdy', 'decent', 'lovely', 'capable', 'compact', 'versatile', 'affordable', 'premium', 'handy', 'polished'];
+const NOUNS = ['build', 'value', 'sound', 'design', 'battery', 'finish', 'setup', 'range', 'grip', 'weight', 'comfort', 'colour', 'texture'];
+const VERBS = ['delivers', 'performs', 'impresses', 'lasts', 'satisfies', 'shines', 'endures', 'improves', 'excels', 'wins', 'pleases'];
+const CLOSERS = ['recommended', 'worthwhile', 'keeping', 'unbeatable', 'flawless', 'dependable', 'gorgeous', 'brilliant', 'terrific', 'wonderful'];
+
 function makeReviews(count, { verifiedRatio = 0.8, monthsSpread = 12 } = {}) {
   const reviews = [];
   for (let i = 0; i < count; i++) {
     const monthOffset = i % monthsSpread;
+    const adj = ADJECTIVES[i % ADJECTIVES.length];
+    const noun = NOUNS[(i * 3) % NOUNS.length];
+    const verb = VERBS[(i * 5) % VERBS.length];
+    const closer = CLOSERS[(i * 7) % CLOSERS.length];
     reviews.push({
       id: `r${i}`,
       rating: 5,
-      title: `Great product number ${i}`,
-      body: `This works well and I am happy with purchase number ${i} overall.`,
+      title: `${adj} ${noun}`,
+      // Unique per-review token first so no four-word window recurs across
+      // the sample (the check reads title + body together).
+      body: `unit${i} ${verb} ${closer} ${adj} ${noun}`,
       date: `Reviewed in the United States on January ${1 + (i % 28)}, ${2024 - monthOffset}`,
       verified: i / count < verifiedRatio,
       vine: false,
@@ -94,9 +110,14 @@ async function main() {
     price: null,
     priceCurrency: null,
   }));
-  log(`grade=${echoDot.grade} confidence=${echoDot.confidence} verdict="${echoDot.verdict}"`);
+  const echoHist = echoDot.checks.find((c) => c.id === 'histogram-shape');
+  log(`grade=${echoDot.grade} confidence=${echoDot.confidence} histogram=${echoHist?.status} verdict="${echoDot.verdict}"`);
   log(`price check status: ${echoDot.checks.find((c) => c.id === 'price-vs-reviews')?.status}`);
   results.echo_dot_like_grades_a_or_b = echoDot.grade === 'A' || echoDot.grade === 'B';
+  // The richest signal for a 4.7★/195k flagship must read as a PASS, not a
+  // "watch — thin middle": an 82/10/3/2/3 spread is what excellent looks
+  // like, and dinging it is the "grade looks obviously wrong" failure mode.
+  results.echo_dot_like_histogram_is_pass = echoHist?.status === 'pass';
   results.echo_dot_like_price_excluded_as_unknown = echoDot.checks.find((c) => c.id === 'price-vs-reviews')?.status === 'unknown';
 
   // --- Case 2: AULA-like — tiny population (14 reviews), high price
@@ -173,6 +194,69 @@ async function main() {
   }));
   log(`grade=${midTier.grade} confidence=${midTier.confidence} verdict="${midTier.verdict}"`);
   results.mid_tier_grade_is_reasonable = ['A', 'B', 'C'].includes(midTier.grade);
+
+  // --- Case 5: zero reviews / brand-new listing — no rating, no count, no
+  // histogram. Must be "Insufficient data", never a real letter grade. ---
+  log('\n=== Case 5: zero reviews / brand-new listing ===');
+  const zeroReviews = analyzeReviews(basePage({
+    averageRating: null,
+    totalReviewCount: null,
+    totalReviews: 0,
+    ratingHistogram: [],
+    reviews: [],
+    reviewsScanned: 0,
+    price: 30,
+    priceCurrency: '$',
+  }));
+  log(`grade=${zeroReviews.grade} confidence=${zeroReviews.confidence} verdict="${zeroReviews.verdict}"`);
+  results.zero_reviews_is_insufficient_data = zeroReviews.grade === 'Insufficient data';
+  results.zero_reviews_confidence_low = zeroReviews.confidence === 'Low';
+
+  // --- Case 6: exactly 1 review on a CHEAP item — a single 5-star review on
+  // an $8 item is not suspicious (cheap items legitimately have few reviews),
+  // so the price signal must NOT red-flag and confidence must be Low. ---
+  log('\n=== Case 6: exactly 1 review, cheap ($8) ===');
+  const oneReviewCheap = analyzeReviews(basePage({
+    averageRating: 5.0,
+    totalReviewCount: 1,
+    totalReviews: 1,
+    ratingHistogram: [],
+    reviews: makeReviews(1),
+    reviewsScanned: 1,
+    price: 8,
+    priceCurrency: '$',
+  }));
+  const cheapPrice = oneReviewCheap.checks.find((c) => c.id === 'price-vs-reviews');
+  log(`grade=${oneReviewCheap.grade} confidence=${oneReviewCheap.confidence} price=${cheapPrice?.status} verdict="${oneReviewCheap.verdict}"`);
+  results.one_review_cheap_price_not_flagged = cheapPrice?.status !== 'risk';
+  results.one_review_cheap_confidence_low = oneReviewCheap.confidence === 'Low';
+
+  // --- Case 7: exactly 1 review on an EXPENSIVE item — one review on a $250
+  // item IS a real anomaly; the price signal must red-flag and the grade
+  // must land low. ---
+  log('\n=== Case 7: exactly 1 review, expensive ($250) ===');
+  const oneReviewPricey = analyzeReviews(basePage({
+    averageRating: 5.0,
+    totalReviewCount: 1,
+    totalReviews: 1,
+    ratingHistogram: [],
+    reviews: makeReviews(1),
+    reviewsScanned: 1,
+    price: 250,
+    priceCurrency: '$',
+  }));
+  const priceyPrice = oneReviewPricey.checks.find((c) => c.id === 'price-vs-reviews');
+  log(`grade=${oneReviewPricey.grade} confidence=${oneReviewPricey.confidence} price=${priceyPrice?.status} verdict="${oneReviewPricey.verdict}"`);
+  results.one_review_pricey_price_flagged = priceyPrice?.status === 'risk';
+  results.one_review_pricey_grade_low = ['C', 'D', 'F'].includes(oneReviewPricey.grade);
+
+  // --- Case 8: the asymmetry itself — a cheap item with few reviews must
+  // never grade WORSE than the identical-review-count expensive item. This
+  // is the exact "cheap items legitimately have few reviews" requirement. ---
+  log('\n=== Case 8: cheap-thin must not grade worse than expensive-thin ===');
+  const GRADE_ORDER = { A: 5, B: 4, C: 3, D: 2, F: 1, 'Insufficient data': 0 };
+  log(`cheap=${oneReviewCheap.grade} pricey=${oneReviewPricey.grade}`);
+  results.cheap_thin_not_worse_than_pricey_thin = GRADE_ORDER[oneReviewCheap.grade] >= GRADE_ORDER[oneReviewPricey.grade];
 
   log('\n=== RESULTS ===');
   for (const [key, value] of Object.entries(results)) {

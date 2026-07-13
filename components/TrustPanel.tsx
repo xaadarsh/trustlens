@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { getProviderKey, getSettings } from '@/lib/byo-key';
 import { runDeepAnalysis } from '@/lib/deep-analysis';
 import { recordHistoryEntry } from '@/lib/history';
@@ -72,6 +72,15 @@ export function TrustPanel({ page }: TrustPanelProps) {
   const [isPro, setIsPro] = useState(false);
   const [remainingTrials, setRemainingTrials] = useState(FREE_TRIAL_LIMIT);
   const [busy, setBusy] = useState(false);
+  // Synchronous re-entrancy guard for the deep-dive button, mirroring the
+  // same fix in Settings' KeyRow: the `busy` state disables the button, but
+  // state only takes effect after a re-render, so two clicks fired in the
+  // same tick (a genuine double-click, or a click while the first is still
+  // in flight) could both slip past the disabled check and fire two AI
+  // requests — double-billing the user's API quota and, on the free tier,
+  // burning two trial analyses for one intended action. A ref flips
+  // synchronously and closes that window.
+  const deepDiveBusyRef = useRef(false);
   // Which signal rows are tap-expanded to show their plain-language "why" —
   // a Set so more than one can be open at once, independent of row order.
   const [expandedChecks, setExpandedChecks] = useState<Set<string>>(() => new Set());
@@ -146,6 +155,8 @@ export function TrustPanel({ page }: TrustPanelProps) {
   }, []);
 
   async function handleDeepDive() {
+    if (deepDiveBusyRef.current) return;
+    deepDiveBusyRef.current = true;
     setBusy(true);
     setDeepDiveStatus('Checking AI analysis access...');
     setDeepDive('');
@@ -183,6 +194,7 @@ export function TrustPanel({ page }: TrustPanelProps) {
     } catch (error) {
       setDeepDiveStatus(error instanceof Error ? error.message : 'Deep dive failed.');
     } finally {
+      deepDiveBusyRef.current = false;
       setBusy(false);
     }
   }

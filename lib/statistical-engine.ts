@@ -258,15 +258,28 @@ function checkHistogramShape(page: ScrapedAmazonPage): RuleCheckResult {
     return result('histogram-shape', 'Rating pattern', 'risk', 25, `${shape} — ratings pile up at 5 stars and 1 star with almost nothing in between. That split can mean paid 5-star reviews mixed in with real unhappy buyers — worth a closer look.`);
   }
 
-  if (middle >= 10) {
-    return result('histogram-shape', 'Rating pattern', 'watch', 62, `${shape} — fewer mid-range (2-4★) ratings than typical. Not alarming on its own, but a bit thinner than a natural spread.`);
+  // Genuinely excellent at scale: a heavy 5★ share with only a small 1★ tail
+  // IS what a well-loved product looks like — a thin 2-4★ middle here is
+  // expected, not suspicious. This must be checked BEFORE the "thin middle"
+  // watch below, or a 4.7★/195k-review flagship (e.g. 82/10/3/2/3) gets
+  // dinged for the very shape that signals it's great — the exact "grade
+  // looks obviously wrong to a shopper" failure. Gated on a review base
+  // large enough (>= 1000, where confidence also becomes High) that the
+  // shape can't be cheaply staged.
+  if (reviewCount >= 1000 && p5 >= 70 && p1 < jShapeMinP1) {
+    return result('histogram-shape', 'Rating pattern', 'pass', 90, `${shape} — a heavy 5-star skew with only a small 1-star tail, backed by a large, well-established review base. That's the expected shape for a genuinely popular product, not a manipulated one.`);
   }
 
-  // Thin middle, but the 1-star tail never got large enough to read as a
-  // genuine J-shape, and the population is large enough that this is just
-  // what a well-loved product's rating history looks like.
-  if (reviewCount >= 10000 && p1 < jShapeMinP1) {
-    return result('histogram-shape', 'Rating pattern', 'pass', 88, `${shape} — a heavy 5-star skew with very few 1-star ratings, backed by a large, well-established review base. That's the expected shape for a genuinely popular product, not a manipulated one.`);
+  // "Too perfect": near-total 5★ with almost no spread at all — but only
+  // suspicious when the review base is small enough to be cheaply staged. At
+  // scale this is usually just a genuinely dominant product, which the
+  // branch above already passes.
+  if (p5 >= 90 && reviewCount < 500) {
+    return result('histogram-shape', 'Rating pattern', 'risk', 32, `${shape} — an unusually high share of 5-star ratings with almost no spread, on a still-small review base. Genuine products usually pick up more variety than this.`);
+  }
+
+  if (middle >= 10) {
+    return result('histogram-shape', 'Rating pattern', 'watch', 62, `${shape} — fewer mid-range (2-4★) ratings than typical. Not alarming on its own, but a bit thinner than a natural spread.`);
   }
 
   return result('histogram-shape', 'Rating pattern', 'watch', 55, `${shape} — the spread of ratings across the scale is thinner than typical for a genuine product.`);

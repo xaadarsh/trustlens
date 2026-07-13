@@ -21,17 +21,92 @@ export default defineContentScript({
     const settings = await getSettings();
     if (!settings.enabled) return;
 
-    if (!isProductPage()) return;
-    // mountWhenReady is async and unawaited by design (main() must return
-    // immediately) — but that means an unexpected throw anywhere inside it
-    // would otherwise become an unhandled promise rejection, which Chrome
-    // surfaces as a visible console error. Graceful degradation (item 4)
-    // means every failure path resolves to a clean, silent state instead.
-    mountWhenReady().catch((err) => {
-      console.warn('[GradeLens] mountWhenReady failed unexpectedly — panel not mounted.', err);
+    // Amazon navigates between products via History-API partial swaps (most
+    // visibly on size/color variant clicks), which do NOT re-fire a content
+    // script's main() — it runs once per full page load. Without watching for
+    // that, the panel would keep showing the first product's grade, and the
+    // per-product review observer would merge the next product's cards into
+    // the previous product's sample (a Frankenstein grade). The watcher +
+    // reconcile() re-mount on every product change; reconcile() also does the
+    // initial mount for this load. Every path resolves to a clean, silent
+    // state on failure rather than surfacing an unhandled rejection.
+    installNavigationWatcher();
+    reconcile().catch((err) => {
+      console.warn('[GradeLens] Initial mount failed unexpectedly — panel not mounted.', err);
     });
   },
 });
+
+// ---------------------------------------------------------------------------
+// SPA-aware mount coordination
+// ---------------------------------------------------------------------------
+
+// The product this content-script instance currently has a panel mounted for
+// (its ASIN, or the pathname as a fallback), and the teardown for that
+// mount's review observer/timers. Module-scoped because a single content
+// script instance persists across Amazon's in-page (History-API)
+// navigations — main() only ever runs once per full page load.
+let currentMountKey: string | null = null;
+let activeCleanup: (() => void) | null = null;
+let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Null on any non-product page (search, category, cart) — reconcile() reads
+// this to decide whether a panel should exist at all right now.
+function currentProductKey(): string | null {
+  if (!isProductPage()) return null;
+  return asinFromUrl() ?? location.pathname;
+}
+
+function teardownCurrentMount(): void {
+  activeCleanup?.();
+  activeCleanup = null;
+  document.getElementById('gradelens-root')?.remove();
+  currentMountKey = null;
+}
+
+// Idempotent: brings the on-page panel in line with whatever product (if any)
+// the URL now points at. Same product already mounted and still present in
+// the DOM -> no-op. Different product, or navigated onto/off a product page
+// -> teardown the old mount and fresh-mount (or just teardown). Every
+// SPA-navigation signal funnels through here.
+async function reconcile(): Promise<void> {
+  const key = currentProductKey();
+  if (key === null) {
+    teardownCurrentMount();
+    return;
+  }
+  if (key === currentMountKey && document.getElementById('gradelens-root')) {
+    return;
+  }
+  teardownCurrentMount();
+  currentMountKey = key;
+  await mountWhenReady();
+}
+
+function scheduleReconcile(): void {
+  if (reconcileTimer) clearTimeout(reconcileTimer);
+  // Small delay so Amazon has a beat to swap in the new product's content
+  // before we scrape it for the mount anchor and rating data.
+  reconcileTimer = setTimeout(() => {
+    reconcile().catch((err) => console.warn('[GradeLens] Re-mount after navigation failed.', err));
+  }, 400);
+}
+
+function installNavigationWatcher(): void {
+  // Back/forward.
+  window.addEventListener('popstate', scheduleReconcile);
+  // pushState/replaceState swaps: a content script runs in an isolated world
+  // and can't observe the page's own history calls directly, so poll the
+  // URL. Cheap (a string compare) and stops with the page; 800ms is well
+  // under the time a user spends reading a freshly-swapped product.
+  let lastHref = location.href;
+  setInterval(() => {
+    if (location.href !== lastHref) {
+      lastHref = location.href;
+      scheduleReconcile();
+    }
+  }, 800);
+}
 
 const MUTATION_DEBOUNCE_MS = 500;
 
@@ -141,6 +216,14 @@ function startOrganicAccumulation(reactRoot: ReturnType<typeof createRoot>, acc:
   }
 
   function rescan() {
+    // A pushState swap can land in the ≤800ms gap between URL polls; if the
+    // product changed out from under this observer, do NOT merge the new
+    // product's cards into the old sample — hand off to reconcile() to tear
+    // this mount down and start a clean one for the new product instead.
+    if (currentProductKey() !== currentMountKey) {
+      scheduleReconcile();
+      return;
+    }
     if (acc.page.reviews.length >= MAX_ACCUMULATED_REVIEWS) {
       cleanup();
       return;
@@ -158,6 +241,10 @@ function startOrganicAccumulation(reactRoot: ReturnType<typeof createRoot>, acc:
 
   observer.observe(document.body, { childList: true, subtree: true });
   window.addEventListener('pagehide', cleanup, { once: true });
+  // Registered so teardownCurrentMount() (on SPA navigation to another
+  // product) can stop this product's observer and pending debounce before a
+  // fresh mount begins — otherwise a stale observer would keep firing.
+  activeCleanup = cleanup;
 }
 
 // Amazon's product page itself only ever renders a handful of review cards.
@@ -285,12 +372,33 @@ const selectors = {
   mountAnchor: ['#averageCustomerReviews', '#averageCustomerReviews_feature_div', '[data-hook="average-star-rating"]', '#reviewsMedley', '[data-hook="reviews-medley-widget"]', '#productTitle', '#centerCol'],
 };
 
+// Selector groups whose absence is a NORMAL, expected state, not a sign of
+// anything broken — a non-Vine review has no vine badge, an out-of-stock
+// listing shows no price, a per-card field can be missing. Warning on these
+// spammed the console on every ordinary page (one line per review card for
+// vineBadge alone). Structural groups NOT listed here (title, averageRating,
+// totalReviewCount, reviewCards, ratingHistogramTable, mountAnchor,
+// productDetails) still warn once per scrape as a layout-change canary, and
+// several of those also have a clearer dedicated message at the call site.
+const QUIET_SELECTOR_GROUPS = new Set<keyof typeof selectors>([
+  'asin',
+  'price',
+  'reviewStar',
+  'reviewTitle',
+  'reviewBody',
+  'reviewDate',
+  'verifiedBadge',
+  'vineBadge',
+]);
+
 function queryFirst(group: keyof typeof selectors, root: ParentNode): Element | null {
   for (const selector of selectors[group]) {
     const found = root.querySelector(selector);
     if (found) return found;
   }
-  console.warn(`[GradeLens] No match for ${group}: ${selectors[group].join(', ')}`);
+  if (!QUIET_SELECTOR_GROUPS.has(group)) {
+    console.warn(`[GradeLens] No match for ${group}: ${selectors[group].join(', ')}`);
+  }
   return null;
 }
 
@@ -299,7 +407,9 @@ function queryAll(group: keyof typeof selectors, root: ParentNode): Element[] {
     const found = [...root.querySelectorAll(selector)];
     if (found.length) return found;
   }
-  console.warn(`[GradeLens] No matches for ${group}: ${selectors[group].join(', ')}`);
+  if (!QUIET_SELECTOR_GROUPS.has(group)) {
+    console.warn(`[GradeLens] No matches for ${group}: ${selectors[group].join(', ')}`);
+  }
   return [];
 }
 
