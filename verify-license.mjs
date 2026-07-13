@@ -150,6 +150,42 @@ async function main() {
     }
   }
 
+  // --- Phase 4: tamper resistance — flip pro:true directly in
+  // chrome.storage.local (the exact "open DevTools, paste one line" bypass
+  // a bare stored boolean has no defense against) and confirm the signed-
+  // record check rejects it instead of trusting it. ---
+  log('\n=== Phase 4: tamper resistance — pro:true written directly to storage (no valid signature) must be rejected ===');
+  fs.rmSync(USER_DATA_DIR, { recursive: true, force: true });
+  {
+    const { context, extensionId } = await launch();
+    try {
+      let sw = context.serviceWorkers()[0];
+      if (!sw) sw = await context.waitForEvent('serviceworker', { timeout: 15000 }).catch(() => null);
+
+      // Exactly what a curious user would paste into the extension's own
+      // DevTools console — no HMAC secret, no signature, just the naive
+      // "flip the boolean" bypass a plain stored flag has no defense against.
+      await sw.evaluate(async () => {
+        await chrome.storage.local.set({
+          'gradelens.license': { pro: true, licenseKey: 'FORGED-BY-DEVTOOLS', message: 'Pro license active' },
+        });
+      });
+
+      const optionsPage = await context.newPage();
+      await optionsPage.goto(`chrome-extension://${extensionId}/options.html`, { waitUntil: 'domcontentloaded' });
+      await optionsPage.waitForTimeout(1500);
+      const bodyText = await optionsPage.locator('body').innerText();
+      log(`Options body after forged storage write (excerpt): ${bodyText.slice(0, 300).replace(/\n+/g, ' | ')}`);
+
+      results.tampered_record_rejected_as_free = !/Pro license active/i.test(bodyText) && /\bFREE\b/i.test(bodyText);
+      await optionsPage.screenshot({ path: path.join(VERIFICATION_DIR, 'license-tamper-rejected.png') });
+      log('Screenshot saved: verification/license-tamper-rejected.png');
+      await optionsPage.close();
+    } finally {
+      await context.close();
+    }
+  }
+
   log('\n=== RESULTS ===');
   for (const [key, value] of Object.entries(results)) {
     log(`[${value ? 'PASS' : 'FAIL'}] ${key}`);
