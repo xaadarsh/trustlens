@@ -1,4 +1,4 @@
-import { AIRequestError, fetchAIResponse, requestWithRetry } from './ai-request';
+import { AIRequestError, fetchAIResponse, GEMINI_MODEL_FALLBACK_CHAIN, requestWithModelFallback, requestWithRetry } from './ai-request';
 import { ensureStorageMigrated } from './storage-migration';
 import type { DeepAnalysisProvider, KeyTestResult, StoredSettings } from './types';
 
@@ -48,9 +48,16 @@ export async function testApiKey(provider: DeepAnalysisProvider, apiKey: string)
   const providerLabel = provider === 'gemini' ? 'Gemini' : 'OpenAI';
 
   try {
-    await requestWithRetry(() => (
-      provider === 'gemini'
-        ? fetchAIResponse('Gemini', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent', {
+    if (provider === 'gemini') {
+      // attemptsPerModel: 1 — the Test button is a quick sanity check, not
+      // the full retry depth the deep-dive gets; trying each of the 3
+      // fallback models once (no per-model retry) keeps the worst case at
+      // 3 * TEST_TIMEOUT_MS with no backoff delays, well inside the ~10s a
+      // settings-page button should ever spin for.
+      await requestWithModelFallback(GEMINI_MODEL_FALLBACK_CHAIN, (modelId) => fetchAIResponse(
+        'Gemini',
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`,
+        {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -60,11 +67,14 @@ export async function testApiKey(provider: DeepAnalysisProvider, apiKey: string)
             contents: [{ parts: [{ text: 'Reply with OK.' }] }],
             generationConfig: { maxOutputTokens: 8 },
           }),
-        }, TEST_TIMEOUT_MS)
-        : fetchAIResponse('OpenAI', 'https://api.openai.com/v1/models', {
-          headers: { Authorization: `Bearer ${apiKey}` },
-        }, TEST_TIMEOUT_MS)
-    ));
+        },
+        TEST_TIMEOUT_MS,
+      ), 1);
+    } else {
+      await requestWithRetry(() => fetchAIResponse('OpenAI', 'https://api.openai.com/v1/models', {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      }, TEST_TIMEOUT_MS));
+    }
     return { ok: true, message: `${providerLabel} key works.` };
   } catch (error) {
     const classified = error instanceof AIRequestError
@@ -76,4 +86,12 @@ export async function testApiKey(provider: DeepAnalysisProvider, apiKey: string)
       });
     return { ok: false, message: classified.message };
   }
+}
+
+// Clears only the active-key concern (BYO Gemini/OpenAI key), never the
+// license. They're stored under entirely separate chrome.storage.local keys
+// ('gradelens.settings' here vs. 'gradelens.license' in lib/license.ts) and
+// this only ever touches the former — removing a key can never revoke Pro.
+export async function clearProviderKey(provider: DeepAnalysisProvider): Promise<StoredSettings> {
+  return provider === 'gemini' ? saveSettings({ geminiKey: '' }) : saveSettings({ openaiKey: '' });
 }

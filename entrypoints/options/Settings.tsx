@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import { AIProviderSetup } from '@/components/AIProviderSetup';
-import { getSettings, saveSettings } from '@/lib/byo-key';
+import { clearProviderKey, getProviderKey, getSettings, saveSettings } from '@/lib/byo-key';
 import { clearHistory } from '@/lib/history';
 import { checkProStatus, getCachedLicenseStatus, GUMROAD_CHECKOUT_URL, saveLicenseKey } from '@/lib/license';
 import { FREE_TRIAL_LIMIT, getRemainingTrials } from '@/lib/usage-limits';
@@ -24,6 +24,7 @@ function Settings() {
   const [remainingTrials, setRemainingTrials] = useState(FREE_TRIAL_LIMIT);
   const [status, setStatus] = useState('');
   const [historyStatus, setHistoryStatus] = useState('');
+  const [keyRemovedStatus, setKeyRemovedStatus] = useState('');
 
   const version = browser.runtime.getManifest().version;
 
@@ -64,6 +65,20 @@ function Settings() {
       setStatus(result.message);
     } catch {
       setStatus('Could not verify the license key. Check your connection and try again.');
+    }
+  }
+
+  // Independent of license state on purpose — this only ever writes the BYO
+  // key fields in 'gradelens.settings' (see clearProviderKey), never
+  // 'gradelens.license'. Removing a key can't revoke Pro; the two are
+  // stored and read from entirely separate places.
+  async function handleRemoveKey() {
+    try {
+      const next = await clearProviderKey(settings.provider);
+      setSettings(next);
+      setKeyRemovedStatus(`${settings.provider === 'gemini' ? 'Gemini' : 'OpenAI'} key removed.`);
+    } catch {
+      setKeyRemovedStatus('Could not remove the key — try again.');
     }
   }
 
@@ -111,6 +126,20 @@ function Settings() {
                 <div className="row row-static">
                   <span className="pro-status-text">{license.message}</span>
                 </div>
+                {getProviderKey(settings) ? (
+                  <>
+                    <div className="divider" />
+                    <div className="row">
+                      <span className="row-label">{settings.provider === 'gemini' ? 'Gemini' : 'OpenAI'} key saved</span>
+                      <button className="btn-sm btn-outline-sm" onClick={handleRemoveKey}>Remove key</button>
+                    </div>
+                  </>
+                ) : null}
+                {/* Rendered outside the getProviderKey check above (not
+                    nested inside it) — the moment removal succeeds,
+                    getProviderKey(settings) goes falsy and would hide this
+                    confirmation in the same render if it were nested there. */}
+                {keyRemovedStatus ? <p className="key-row-feedback key-row-feedback--ok">{keyRemovedStatus}</p> : null}
               </>
             ) : (
               <>

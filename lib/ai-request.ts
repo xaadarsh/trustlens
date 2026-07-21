@@ -156,3 +156,54 @@ export async function requestWithRetry<T>(attempt: (attemptNumber: number) => Pr
   }
   throw lastError ?? new Error('Request failed.');
 }
+
+// Gemini-only: the model actually being called matters as much as the
+// status code. GradeLens hardcoded a single model (gemini-3.5-flash) that
+// hits capacity-driven 503s far more than the older, more-provisioned
+// models a valid free-tier key can already reach fine — this is why "the
+// same key works in my other extensions" while GradeLens 503s. Falling back
+// to progressively older/more-available models turns a capacity problem
+// into a solved one without ever touching the classification rules above:
+// a 400/401/403 is still a rejected key on ANY model (checked first,
+// against model #1, and treated as conclusive for the whole key rather than
+// wasted re-checking against every other model), and only exhausting every
+// model's retryable failures produces the final "overloaded" message.
+export const GEMINI_MODEL_FALLBACK_CHAIN = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'] as const;
+
+// Deliberately NOT "3 retries x N models" (9-15 calls, a potential 90s+
+// hang) — each model gets at most `attemptsPerModel` tries (only for
+// retryable failures) before moving to the next model with no extra delay,
+// so the worst case across the whole chain is models.length *
+// attemptsPerModel total calls, bounded and predictable.
+export async function requestWithModelFallback<T>(
+  models: readonly string[],
+  attempt: (modelId: string) => Promise<T>,
+  attemptsPerModel = 2,
+): Promise<T> {
+  let lastError: AIRequestError | undefined;
+  for (const modelId of models) {
+    for (let attemptNumber = 1; attemptNumber <= attemptsPerModel; attemptNumber += 1) {
+      try {
+        return await attempt(modelId);
+      } catch (error) {
+        const classified = error instanceof AIRequestError
+          ? error
+          : new AIRequestError({
+            kind: 'unknown',
+            retryable: false,
+            message: error instanceof Error ? error.message : 'Something went wrong.',
+          });
+        lastError = classified;
+        // A rejected key or a rate limit is true of every model behind the
+        // same key — trying the next model would just spend another call
+        // reproducing an identical failure, so stop immediately rather than
+        // masking it behind a fallback loop.
+        if (!classified.retryable) throw classified;
+        if (attemptNumber < attemptsPerModel) await sleep(backoffDelay(attemptNumber));
+        // else: this model's attempts are exhausted — fall through to the
+        // next model in the outer loop, no extra delay for the model swap.
+      }
+    }
+  }
+  throw lastError ?? new Error('All models failed.');
+}

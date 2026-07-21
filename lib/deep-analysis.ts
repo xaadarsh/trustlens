@@ -1,4 +1,4 @@
-import { fetchAIResponse, requestWithRetry } from './ai-request';
+import { fetchAIResponse, GEMINI_MODEL_FALLBACK_CHAIN, requestWithModelFallback, requestWithRetry } from './ai-request';
 import type { DeepAnalysisProvider, ScrapedAmazonPage, StatisticalAnalysis } from './types';
 
 const SYSTEM_PROMPT = `You are GradeLens, a review-authenticity assistant. Your job is spotting PATTERNS IN THE REVIEWS THEMSELVES — signs of genuine vs. manipulated feedback — not reviewing the product. Do not accuse a seller, reviewer, brand, product, or review of fraud. Do not claim proof.
@@ -91,10 +91,22 @@ interface OpenAIResponse {
   }[];
 }
 
+// thinkingConfig.thinkingLevel is only confirmed valid against
+// gemini-3.5-flash (see the truncation-fix comment this was verified
+// against) — the older fallback models use a different thinking-budget
+// shape or none at all, so sending this field to a model it was never
+// tested against risks trading a 503 for an unnecessary 400. Only the
+// first/primary model gets it; fallback models get the plain config.
+function geminiGenerationConfig(modelId: string): Record<string, unknown> {
+  const base = { maxOutputTokens: 1536, temperature: 0.2 };
+  if (modelId !== GEMINI_MODEL_FALLBACK_CHAIN[0]) return base;
+  return { ...base, thinkingConfig: { thinkingLevel: 'low' } };
+}
+
 async function runGemini(apiKey: string, prompt: string): Promise<string> {
-  const response = await requestWithRetry(() => fetchAIResponse(
+  const response = await requestWithModelFallback(GEMINI_MODEL_FALLBACK_CHAIN, (modelId) => fetchAIResponse(
     'Gemini',
-    'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent',
+    `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`,
     {
       method: 'POST',
       headers: {
@@ -104,19 +116,7 @@ async function runGemini(apiKey: string, prompt: string): Promise<string> {
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          // Gemini 3.5 Flash thinks by default (thinkingLevel "medium") and
-          // those thinking tokens count against maxOutputTokens — with the
-          // old 700-token budget, thinking alone could consume the whole
-          // budget before any visible text was written, which is what was
-          // actually causing the "cuts off mid-sentence" truncation reported.
-          // This is a short pattern-analysis task, not one that benefits from
-          // heavy reasoning, so thinking is capped low and the budget is
-          // raised to comfortably cover thinking + the full visible answer.
-          thinkingConfig: { thinkingLevel: 'low' },
-          maxOutputTokens: 1536,
-          temperature: 0.2,
-        },
+        generationConfig: geminiGenerationConfig(modelId),
       }),
     },
     DEEP_DIVE_TIMEOUT_MS,
